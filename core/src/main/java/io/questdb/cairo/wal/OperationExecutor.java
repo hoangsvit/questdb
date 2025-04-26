@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@ import io.questdb.cairo.CairoEngine;
 import io.questdb.cairo.TableToken;
 import io.questdb.cairo.TableWriter;
 import io.questdb.cairo.sql.BindVariableService;
+import io.questdb.cairo.sql.TableReferenceOutOfDateException;
 import io.questdb.griffin.CompiledQuery;
 import io.questdb.griffin.SqlCompiler;
 import io.questdb.griffin.SqlException;
@@ -42,7 +43,7 @@ import java.io.Closeable;
 class OperationExecutor implements Closeable {
     private final BindVariableService bindVariableService;
     private final CairoEngine engine;
-    private final WalApplySqlExecutionContext renameSupportExecutionContext;
+    private final WalApplySqlExecutionContext executionContext;
     private final Rnd rnd;
 
     OperationExecutor(
@@ -52,12 +53,12 @@ class OperationExecutor implements Closeable {
     ) {
         rnd = new Rnd();
         bindVariableService = new BindVariableServiceImpl(engine.getConfiguration());
-        renameSupportExecutionContext = new WalApplySqlExecutionContext(
+        executionContext = new WalApplySqlExecutionContext(
                 engine,
                 workerCount,
                 sharedWorkerCount
         );
-        renameSupportExecutionContext.with(
+        executionContext.with(
                 engine.getConfiguration().getFactoryProvider().getSecurityContextFactory().getRootContext(),
                 bindVariableService,
                 rnd,
@@ -69,17 +70,46 @@ class OperationExecutor implements Closeable {
 
     @Override
     public void close() {
-        Misc.free(renameSupportExecutionContext);
+        Misc.free(executionContext);
     }
 
-    public void executeAlter(TableWriter tableWriter, CharSequence alterSql, long seqTxn) throws SqlException {
+    /**
+     * Returns result of underlying {@link AlterOperation#matViewInvalidationReason()}.
+     */
+    public String executeAlter(TableWriter tableWriter, CharSequence alterSql, long seqTxn) throws SqlException {
         final TableToken tableToken = tableWriter.getTableToken();
         try (SqlCompiler compiler = engine.getSqlCompiler()) {
-            renameSupportExecutionContext.remapTableNameResolutionTo(tableToken);
-            final CompiledQuery compiledQuery = compiler.compile(alterSql, renameSupportExecutionContext);
+            executionContext.remapTableNameResolutionTo(tableToken);
+            CompiledQuery compiledQuery;
+            int stallCount = 0;
+            while (true) {
+                try {
+                    compiledQuery = compiler.compile(alterSql, executionContext);
+                    break;
+                } catch (TableReferenceOutOfDateException ex) {
+                    // The table is renamed in the table registry
+                    // just before the compilation of this ALTER
+                    TableToken updatedToken = engine.getUpdatedTableToken(tableToken);
+                    if (updatedToken != null && !updatedToken.equals(tableToken)) {
+                        tableWriter.updateTableToken(updatedToken);
+                        executionContext.remapTableNameResolutionTo(updatedToken);
+                    } else {
+                        // This is a transient error, we should retry
+                        // it can happen if the table renamed in the middle
+                        // of alter compilation but then renamed back.
+                        // This is highly unlikely to stall in real life
+                        // but keeping the DB in live lock is not a good idea, hence there is a limit
+                        if (stallCount++ > 10) {
+                            throw ex;
+                        }
+                    }
+                }
+            }
             try (AlterOperation alterOp = compiledQuery.getAlterOperation()) {
-                alterOp.withContext(renameSupportExecutionContext);
+                alterOp.withContext(executionContext);
+                assert !alterOp.isStructural() : "alter operation must not be structural when applied as SQL";
                 tableWriter.apply(alterOp, seqTxn);
+                return alterOp.matViewInvalidationReason();
             }
         } catch (SqlException ex) {
             tableWriter.markSeqTxnCommitted(seqTxn);
@@ -90,17 +120,16 @@ class OperationExecutor implements Closeable {
     public long executeUpdate(TableWriter tableWriter, CharSequence updateSql, long seqTxn) throws SqlException {
         final TableToken tableToken = tableWriter.getTableToken();
         try (SqlCompiler compiler = engine.getSqlCompiler()) {
-            renameSupportExecutionContext.remapTableNameResolutionTo(tableToken);
-            final CompiledQuery compiledQuery = compiler.compile(updateSql, renameSupportExecutionContext);
+            executionContext.remapTableNameResolutionTo(tableToken);
+            final CompiledQuery compiledQuery = compiler.compile(updateSql, executionContext);
             try (UpdateOperation updateOperation = compiledQuery.getUpdateOperation()) {
                 updateOperation.withSqlStatement(updateSql);
-                updateOperation.withContext(renameSupportExecutionContext);
+                updateOperation.withContext(executionContext);
                 return tableWriter.apply(updateOperation, seqTxn);
             }
-        } catch (SqlException ex) {
-            tableWriter.markSeqTxnCommitted(seqTxn);
-            throw ex;
         }
+        // Do not catch the exception and mark transaction as committed
+        // it can be transient, like table does not exist and should be retried.
     }
 
     public BindVariableService getBindVariableService() {
@@ -112,6 +141,6 @@ class OperationExecutor implements Closeable {
     }
 
     public void setNowAndFixClock(long now) {
-        renameSupportExecutionContext.setNowAndFixClock(now);
+        executionContext.setNowAndFixClock(now);
     }
 }

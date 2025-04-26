@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -36,8 +36,8 @@ import io.questdb.std.datetime.microtime.Timestamps;
  * Functions used by both data_trunc() and timestamp_floor() as these functions have overlapping behaviour.
  */
 final class TimestampFloorFunctions {
-    private TimestampFloorFunctions() {
 
+    private TimestampFloorFunctions() {
     }
 
     abstract static class AbstractTimestampFloorFunction extends TimestampFunction implements UnaryFunction {
@@ -55,12 +55,12 @@ final class TimestampFloorFunctions {
         @Override
         public final long getTimestamp(Record rec) {
             long micros = arg.getTimestamp(rec);
-            return micros == Numbers.LONG_NaN ? Numbers.LONG_NaN : floor(micros);
+            return micros == Numbers.LONG_NULL ? Numbers.LONG_NULL : floor(micros);
         }
 
         @Override
         public void toPlan(PlanSink sink) {
-            sink.val("timestamp_floor('").val(getUnit()).val("',").val(getArg()).val(')');
+            sink.val(TimestampFloorFunctionFactory.NAME).val("('").val(getUnit()).val("',").val(getArg()).val(')');
         }
 
         abstract protected long floor(long timestamp);

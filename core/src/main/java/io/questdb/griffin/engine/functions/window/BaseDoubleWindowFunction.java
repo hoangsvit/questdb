@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@
 
 package io.questdb.griffin.engine.functions.window;
 
-import io.questdb.cairo.ArrayColumnTypes;
 import io.questdb.cairo.sql.Function;
 import io.questdb.cairo.sql.Record;
 import io.questdb.cairo.sql.ScalarFunction;
@@ -33,11 +32,9 @@ import io.questdb.griffin.PlanSink;
 import io.questdb.griffin.SqlException;
 import io.questdb.griffin.SqlExecutionContext;
 import io.questdb.griffin.engine.functions.DoubleFunction;
-import io.questdb.griffin.engine.orderby.RecordComparatorCompiler;
 import io.questdb.griffin.engine.window.WindowFunction;
-import io.questdb.std.IntList;
 
-abstract class BaseDoubleWindowFunction extends DoubleFunction implements WindowFunction, ScalarFunction {
+public abstract class BaseDoubleWindowFunction extends DoubleFunction implements WindowFunction, ScalarFunction {
     protected final Function arg;
     protected int columnIndex;
 
@@ -51,8 +48,13 @@ abstract class BaseDoubleWindowFunction extends DoubleFunction implements Window
     }
 
     @Override
+    public void cursorClosed() {
+        arg.cursorClosed();
+    }
+
+    @Override
     public double getDouble(Record rec) {
-        //unused
+        // unused
         throw new UnsupportedOperationException();
     }
 
@@ -66,12 +68,7 @@ abstract class BaseDoubleWindowFunction extends DoubleFunction implements Window
     }
 
     @Override
-    public void initRecordComparator(RecordComparatorCompiler recordComparatorCompiler, ArrayColumnTypes chainTypes, IntList order) {
-    }
-
-    @Override
     public void reset() {
-
     }
 
     @Override
@@ -83,6 +80,9 @@ abstract class BaseDoubleWindowFunction extends DoubleFunction implements Window
     public void toPlan(PlanSink sink) {
         sink.val(getName());
         sink.val('(').val(arg).val(')');
+        if (isIgnoreNulls()) {
+            sink.val(" ignore nulls");
+        }
         sink.val(" over ()");
     }
 

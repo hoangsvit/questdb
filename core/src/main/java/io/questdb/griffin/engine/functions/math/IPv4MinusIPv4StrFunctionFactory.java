@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -46,5 +46,10 @@ public class IPv4MinusIPv4StrFunctionFactory implements FunctionFactory {
             SqlExecutionContext sqlExecutionContext
     ) {
         return new IPv4MinusIPv4FunctionFactory.IPv4MinusIPv4Function(args.getQuick(0), args.getQuick(1));
+    }
+
+    @Override
+    public boolean supportImplicitCastCharToStr() {
+        return false;
     }
 }

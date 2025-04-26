@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -25,46 +25,71 @@
 package io.questdb.cairo.sql;
 
 import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.TableUtils;
 import io.questdb.griffin.PlanSink;
 import io.questdb.griffin.Plannable;
 import io.questdb.griffin.SqlException;
 import io.questdb.griffin.SqlExecutionContext;
 import io.questdb.std.BinarySequence;
+import io.questdb.std.Interval;
 import io.questdb.std.Long256;
 import io.questdb.std.ObjList;
 import io.questdb.std.str.CharSink;
-import io.questdb.std.str.Utf16Sink;
 import io.questdb.std.str.Utf8Sequence;
-import io.questdb.std.str.Utf8Sink;
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.Closeable;
 
 public interface Function extends Closeable, StatefulAtom, Plannable {
 
+    /**
+     * Initializes each function in the list of clones. It is assumed by this method that "clones" are copies of
+     * the same function.
+     * <p>
+     * Two-phase functions might need to perform certain transformations upfront, before SQL executes. This is to
+     * avoid doing those transformations on for every row/invocation. These transformations are done during the
+     * "init" phase.
+     * <p>
+     * During concurrent SQL execution it might be beneficial to split the "init" phase into per-SQL execution and
+     * per-thread. For example "init" could be a heavy SQL execution itself, which would benefit from executing once and
+     * copying state of this execution to clones, so that clones to not have to repeat that heavy SQL execution. The
+     * "prototype" function is the one that has already been fully initialized and it is ready to pass its state to
+     * all the clones.
+     * <p>
+     * Even though the prototype will be trying to pass its state, the clones do not have to accept it and choose to
+     * continue to calculate own state.
+     *
+     * @param clones            uniform function to initialize and accept state from the prototype, if prototype is not null
+     * @param symbolTableSource symbol table source to perform symbol value to key conversion
+     * @param executionContext  the execution context, bind variables etc
+     * @param prototypeFunction the prototype function, ready to donate its state
+     * @throws SqlException function are allowed to throw SQLException to indicate initialization error
+     */
     static void init(
-            ObjList<? extends Function> args,
+            ObjList<? extends Function> clones,
             SymbolTableSource symbolTableSource,
-            SqlExecutionContext executionContext
+            SqlExecutionContext executionContext,
+            @Nullable Function prototypeFunction
     ) throws SqlException {
-        for (int i = 0, n = args.size(); i < n; i++) {
-            args.getQuick(i).init(symbolTableSource, executionContext);
+        if (prototypeFunction != null) {
+            for (int i = 0, n = clones.size(); i < n; i++) {
+                prototypeFunction.offerStateTo(clones.getQuick(i));
+            }
         }
-    }
-
-    static void initCursor(ObjList<? extends Function> args) {
-        for (int i = 0, n = args.size(); i < n; i++) {
-            args.getQuick(i).initCursor();
+        for (int i = 0, n = clones.size(); i < n; i++) {
+            clones.getQuick(i).init(symbolTableSource, executionContext);
         }
     }
 
     static void initNc(
             ObjList<? extends Function> args,
             SymbolTableSource symbolTableSource,
-            SqlExecutionContext executionContext
+            SqlExecutionContext executionContext,
+            @Nullable Function prototypeFunction
     ) throws SqlException {
         if (args != null) {
-            init(args, symbolTableSource, executionContext);
+            init(args, symbolTableSource, executionContext, prototypeFunction);
         }
     }
 
@@ -74,6 +99,9 @@ public interface Function extends Closeable, StatefulAtom, Plannable {
 
     @Override
     default void close() {
+    }
+
+    default void cursorClosed() {
     }
 
     int getArrayLength();
@@ -106,6 +134,9 @@ public interface Function extends Closeable, StatefulAtom, Plannable {
 
     int getInt(Record rec);
 
+    @NotNull
+    Interval getInterval(Record rec);
+
     long getLong(Record rec);
 
     long getLong128Hi(Record rec);
@@ -123,7 +154,8 @@ public interface Function extends Closeable, StatefulAtom, Plannable {
     }
 
     /**
-     * Returns function name or symbol, e.g. concat or + .
+     * @return function name or symbol, e.g. concat or + .
+     * r=
      */
     default String getName() {
         return getClass().getName();
@@ -142,10 +174,6 @@ public interface Function extends Closeable, StatefulAtom, Plannable {
 
     CharSequence getStrA(Record rec, int arrayIndex);
 
-    void getStr(Record rec, Utf16Sink utf16Sink);
-
-    void getStr(Record rec, Utf16Sink sink, int arrayIndex);
-
     CharSequence getStrB(Record rec);
 
     CharSequence getStrB(Record rec, int arrayIndex);
@@ -153,12 +181,6 @@ public interface Function extends Closeable, StatefulAtom, Plannable {
     int getStrLen(Record rec);
 
     int getStrLen(Record rec, int arrayIndex);
-
-    @Nullable Utf8Sequence getVarcharA(Record rec);
-
-    void getVarchar(Record rec, Utf8Sink utf8Sink);
-
-    @Nullable Utf8Sequence getVarcharB(Record rec);
 
     CharSequence getSymbol(Record rec);
 
@@ -168,7 +190,29 @@ public interface Function extends Closeable, StatefulAtom, Plannable {
 
     int getType();
 
+    @Nullable
+    Utf8Sequence getVarcharA(Record rec);
+
+    @Nullable
+    Utf8Sequence getVarcharB(Record rec);
+
+    /**
+     * @return size of the varchar value or {@link TableUtils#NULL_LEN} in case of NULL
+     */
+    int getVarcharSize(Record rec);
+
+    /**
+     * Returns true if function is constant, i.e. its value does not require
+     * any input from the record.
+     *
+     * @return true if function is constant
+     * @see #isRuntimeConstant()
+     */
     default boolean isConstant() {
+        return false;
+    }
+
+    default boolean isNonDeterministic() {
         return false;
     }
 
@@ -182,27 +226,46 @@ public interface Function extends Closeable, StatefulAtom, Plannable {
     }
 
     /**
-     * Returns true if the function and all of its children functions are thread-safe
-     * and, thus, can be called concurrently, false - otherwise. Used as a hint for
-     * parallel SQL filters runtime, thus this method makes sense only for functions
-     * that are allowed in WHERE or GROUP BY clause.
+     * Declares that the function will maintain its value for all the rows during
+     * {@link RecordCursor} traversal. However, between cursor traversals the function
+     * value is liable to change.
      * <p>
-     * If the function is not read thread-safe, it gets cloned for each worker thread.
+     * In practice this means that function arguments that are runtime constants can be
+     * evaluated in the functions {@link #init(ObjList, SymbolTableSource, SqlExecutionContext, Function)} call.
+     * <p>
+     * It has be noted that the function cannot be both {@link #isConstant()} and runtime constant.
      *
-     * @return true if the function and all of its children functions are read thread-safe
+     * @return true when function is runtime constant.
      */
-    default boolean isReadThreadSafe() {
+    default boolean isRuntimeConstant() {
         return false;
     }
 
-    // If function is constant for query, e.g. record independent
-    // For example now() and bind variables are Runtime Constants
-    default boolean isRuntimeConstant() {
+    /**
+     * Returns true if the function and all of its children functions are thread-safe
+     * and, thus, can be called concurrently, false - otherwise. Used as a hint for
+     * parallel SQL execution, thus this method makes sense only for functions
+     * that are allowed in WHERE or GROUP BY clause.
+     * <p>
+     * In case of non-aggregate functions this flag means read thread-safety.
+     * For decomposable (think, parallel) aggregate functions
+     * ({@link io.questdb.griffin.engine.functions.GroupByFunction})
+     * it means write thread-safety, i.e. whether it's safe to use single function
+     * instance concurrently to aggregate across multiple threads.
+     * <p>
+     * If the function is not read thread-safe, it gets cloned for each worker thread.
+     *
+     * @return true if the function and all of its children functions are thread-safe
+     */
+    default boolean isThreadSafe() {
         return false;
     }
 
     default boolean isUndefined() {
         return getType() == ColumnType.UNDEFINED;
+    }
+
+    default void offerStateTo(Function that) {
     }
 
     /**
@@ -231,5 +294,6 @@ public interface Function extends Closeable, StatefulAtom, Plannable {
     }
 
     default void toTop() {
+        // no-op
     }
 }

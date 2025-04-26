@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -30,11 +30,11 @@ import io.questdb.cairo.sql.Record;
 import io.questdb.cairo.sql.RecordCursorFactory;
 import io.questdb.griffin.engine.functions.GroupByFunction;
 import io.questdb.std.BinarySequence;
+import io.questdb.std.Interval;
 import io.questdb.std.Long256;
 import io.questdb.std.str.CharSink;
-import io.questdb.std.str.Utf16Sink;
 import io.questdb.std.str.Utf8Sequence;
-import io.questdb.std.str.Utf8Sink;
+import org.jetbrains.annotations.NotNull;
 import org.junit.Test;
 
 public class GroupByFunctionTest {
@@ -123,6 +123,11 @@ public class GroupByFunctionTest {
         }
 
         @Override
+        public @NotNull Interval getInterval(Record rec) {
+            return Interval.NULL;
+        }
+
+        @Override
         public long getLong(Record rec) {
             return 0;
         }
@@ -164,14 +169,6 @@ public class GroupByFunctionTest {
         @Override
         public short getShort(Record rec) {
             return 0;
-        }
-
-        @Override
-        public void getStr(Record rec, Utf16Sink utf16Sink) {
-        }
-
-        @Override
-        public void getStr(Record rec, Utf16Sink sink, int arrayIndex) {
         }
 
         @Override
@@ -230,11 +227,6 @@ public class GroupByFunctionTest {
         }
 
         @Override
-        public void getVarchar(Record rec, Utf8Sink utf8Sink) {
-
-        }
-
-        @Override
         public Utf8Sequence getVarcharA(Record rec) {
             return null;
         }
@@ -242,6 +234,11 @@ public class GroupByFunctionTest {
         @Override
         public Utf8Sequence getVarcharB(Record rec) {
             return null;
+        }
+
+        @Override
+        public int getVarcharSize(Record rec) {
+            return 0;
         }
 
         @Override

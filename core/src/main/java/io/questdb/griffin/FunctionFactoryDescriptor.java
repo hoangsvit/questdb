@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -36,9 +36,9 @@ public class FunctionFactoryDescriptor {
     private static final IntObjHashMap<String> typeNameMap = new IntObjHashMap<>();
     private final long[] argTypes;
     private final FunctionFactory factory;
+    private final int notVarArgsSigCount;
     private final int openBraceIndex;
     private final int sigArgCount;
-
 
     public FunctionFactoryDescriptor(FunctionFactory factory) throws SqlException {
         this.factory = factory;
@@ -47,6 +47,7 @@ public class FunctionFactoryDescriptor {
         this.openBraceIndex = validateSignatureAndGetNameSeparator(sig);
         // validate data types
         int typeCount = 0;
+        int notVarArgCount = 0;
         for (
                 int i = openBraceIndex + 1, n = sig.length() - 1;
                 i < n; typeCount++
@@ -71,6 +72,9 @@ public class FunctionFactoryDescriptor {
         for (int i = openBraceIndex + 1, n = sig.length() - 1, typeIndex = 0; i < n; ) {
             final char c = sig.charAt(i);
             int type = FunctionFactoryDescriptor.getArgType(c);
+            if (type != ColumnType.VAR_ARG) {
+                notVarArgCount++;
+            }
             final int arrayIndex = typeIndex / 2;
             final int arrayValueOffset = (typeIndex % 2) * 32;
             // check if this is an array
@@ -78,16 +82,17 @@ public class FunctionFactoryDescriptor {
 
             // array bit
             if (i < n && sig.charAt(i) == '[') {
-                type |= (1 << 31);
+                type |= ARRAY_MASK;
                 i += 2;
             }
             // constant bit
             if ((c | 32) == c) {
-                type |= (1 << 30);
+                type |= CONST_MASK;
             }
             types[arrayIndex] |= (toUnsignedLong(type) << (32 - arrayValueOffset));
             typeIndex++;
         }
+        this.notVarArgsSigCount = notVarArgCount;
         this.argTypes = types;
         this.sigArgCount = typeCount;
     }
@@ -172,6 +177,9 @@ public class FunctionFactoryDescriptor {
                 break;
             case 'ø':
                 sigArgType = ColumnType.VARCHAR;
+                break;
+            case 'δ':
+                sigArgType = ColumnType.INTERVAL;
                 break;
             default:
                 sigArgType = -1;
@@ -301,6 +309,10 @@ public class FunctionFactoryDescriptor {
         return factory.getSignature().substring(0, openBraceIndex);
     }
 
+    public int getNotVarArgsSigCount() {
+        return notVarArgsSigCount;
+    }
+
     public int getSigArgCount() {
         return sigArgCount;
     }
@@ -336,6 +348,7 @@ public class FunctionFactoryDescriptor {
         typeNameMap.put('z', "uuid");
         typeNameMap.put('x', "ipv4");
         typeNameMap.put('ø', "varchar");
+        typeNameMap.put('δ', "interval");
         typeNameMap.put('[' | 32, "[]");
     }
 }

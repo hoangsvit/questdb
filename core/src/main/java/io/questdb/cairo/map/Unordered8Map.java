@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -24,11 +24,23 @@
 
 package io.questdb.cairo.map;
 
-import io.questdb.cairo.*;
+import io.questdb.cairo.CairoException;
+import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.ColumnTypes;
+import io.questdb.cairo.RecordSink;
+import io.questdb.cairo.Reopenable;
 import io.questdb.cairo.sql.Record;
 import io.questdb.cairo.sql.RecordCursor;
 import io.questdb.griffin.engine.LimitOverflowException;
-import io.questdb.std.*;
+import io.questdb.std.BinarySequence;
+import io.questdb.std.Hash;
+import io.questdb.std.Interval;
+import io.questdb.std.Long256;
+import io.questdb.std.MemoryTag;
+import io.questdb.std.Numbers;
+import io.questdb.std.Transient;
+import io.questdb.std.Unsafe;
+import io.questdb.std.Vect;
 import io.questdb.std.bytes.Bytes;
 import io.questdb.std.str.Utf8Sequence;
 import org.jetbrains.annotations.NotNull;
@@ -67,10 +79,10 @@ import org.jetbrains.annotations.Nullable;
  * </pre>
  */
 public class Unordered8Map implements Map, Reopenable {
-
     static final long KEY_SIZE = Long.BYTES;
     private static final long MAX_SAFE_INT_POW_2 = 1L << 31;
     private static final int MIN_KEY_CAPACITY = 16;
+
     private final Unordered8MapCursor cursor;
     private final long entrySize;
     private final Key key;
@@ -113,68 +125,73 @@ public class Unordered8Map implements Map, Reopenable {
     ) {
         assert loadFactor > 0 && loadFactor < 1d;
 
-        this.memoryTag = memoryTag;
-        this.loadFactor = loadFactor;
-        this.keyCapacity = (int) (keyCapacity / loadFactor);
-        this.keyCapacity = this.initialKeyCapacity = Math.max(Numbers.ceilPow2(this.keyCapacity), MIN_KEY_CAPACITY);
-        this.maxResizes = maxResizes;
-        mask = this.keyCapacity - 1;
-        free = (int) (this.keyCapacity * loadFactor);
-        nResizes = 0;
+        try {
+            this.memoryTag = memoryTag;
+            this.loadFactor = loadFactor;
+            this.keyCapacity = (int) (keyCapacity / loadFactor);
+            this.keyCapacity = this.initialKeyCapacity = Math.max(Numbers.ceilPow2(this.keyCapacity), MIN_KEY_CAPACITY);
+            this.maxResizes = maxResizes;
+            mask = this.keyCapacity - 1;
+            free = (int) (this.keyCapacity * loadFactor);
+            nResizes = 0;
 
-        final int keyColumnCount = keyTypes.getColumnCount();
-        long keySize = 0;
-        for (int i = 0; i < keyColumnCount; i++) {
-            final int columnType = keyTypes.getColumnType(i);
-            final int size = ColumnType.sizeOf(columnType);
-            if (size > 0) {
-                keySize += size;
-            } else {
-                keySize = -1;
-                break;
-            }
-        }
-        if (keySize <= 0 || keySize > KEY_SIZE) {
-            throw CairoException.nonCritical().put("unexpected key size: ").put(keySize);
-        }
-
-        long valueOffset = 0;
-        long[] valueOffsets = null;
-        long valueSize = 0;
-        if (valueTypes != null) {
-            int valueColumnCount = valueTypes.getColumnCount();
-            valueOffsets = new long[valueColumnCount];
-
-            for (int i = 0; i < valueColumnCount; i++) {
-                valueOffsets[i] = valueOffset;
-                final int columnType = valueTypes.getColumnType(i);
+            final int keyColumnCount = keyTypes.getColumnCount();
+            long keySize = 0;
+            for (int i = 0; i < keyColumnCount; i++) {
+                final int columnType = keyTypes.getColumnType(i);
                 final int size = ColumnType.sizeOf(columnType);
-                if (size <= 0) {
-                    throw CairoException.nonCritical().put("value type is not supported: ").put(ColumnType.nameOf(columnType));
+                if (size > 0) {
+                    keySize += size;
+                } else {
+                    keySize = -1;
+                    break;
                 }
-                valueOffset += size;
-                valueSize += size;
             }
+            if (keySize <= 0 || keySize > KEY_SIZE) {
+                throw CairoException.nonCritical().put("unexpected key size: ").put(keySize);
+            }
+
+            long valueOffset = 0;
+            long[] valueOffsets = null;
+            long valueSize = 0;
+            if (valueTypes != null) {
+                int valueColumnCount = valueTypes.getColumnCount();
+                valueOffsets = new long[valueColumnCount];
+
+                for (int i = 0; i < valueColumnCount; i++) {
+                    valueOffsets[i] = valueOffset;
+                    final int columnType = valueTypes.getColumnType(i);
+                    final int size = ColumnType.sizeOf(columnType);
+                    if (size <= 0) {
+                        throw CairoException.nonCritical().put("value type is not supported: ").put(ColumnType.nameOf(columnType));
+                    }
+                    valueOffset += size;
+                    valueSize += size;
+                }
+            }
+
+            this.entrySize = Bytes.align8b(KEY_SIZE + valueSize);
+
+            final long sizeBytes = entrySize * this.keyCapacity;
+            memStart = Unsafe.malloc(sizeBytes, memoryTag);
+            Vect.memset(memStart, sizeBytes, 0);
+            memLimit = memStart + sizeBytes;
+            keyMemStart = Unsafe.malloc(KEY_SIZE, memoryTag);
+            Unsafe.getUnsafe().putLong(keyMemStart, 0);
+            zeroMemStart = Unsafe.malloc(entrySize, memoryTag);
+            Vect.memset(zeroMemStart, entrySize, 0);
+
+            value = new Unordered8MapValue(valueSize, valueOffsets);
+            value2 = new Unordered8MapValue(valueSize, valueOffsets);
+            value3 = new Unordered8MapValue(valueSize, valueOffsets);
+
+            record = new Unordered8MapRecord(valueSize, valueOffsets, value, keyTypes, valueTypes);
+            cursor = new Unordered8MapCursor(record, this);
+            key = new Key();
+        } catch (Throwable th) {
+            close();
+            throw th;
         }
-
-        this.entrySize = Bytes.align8b(KEY_SIZE + valueSize);
-
-        final long sizeBytes = entrySize * this.keyCapacity;
-        memStart = Unsafe.malloc(sizeBytes, memoryTag);
-        Vect.memset(memStart, sizeBytes, 0);
-        memLimit = memStart + sizeBytes;
-        keyMemStart = Unsafe.malloc(KEY_SIZE, memoryTag);
-        Unsafe.getUnsafe().putLong(keyMemStart, 0);
-        zeroMemStart = Unsafe.malloc(entrySize, memoryTag);
-        Vect.memset(zeroMemStart, entrySize, 0);
-
-        value = new Unordered8MapValue(valueSize, valueOffsets);
-        value2 = new Unordered8MapValue(valueSize, valueOffsets);
-        value3 = new Unordered8MapValue(valueSize, valueOffsets);
-
-        record = new Unordered8MapRecord(valueSize, valueOffsets, value, keyTypes, valueTypes);
-        cursor = new Unordered8MapCursor(record, this);
-        key = new Key();
     }
 
     @Override
@@ -216,6 +233,11 @@ public class Unordered8Map implements Map, Reopenable {
     @Override
     public MapRecord getRecord() {
         return record;
+    }
+
+    @Override
+    public boolean isOpen() {
+        return memStart != 0;
     }
 
     @Override
@@ -277,7 +299,7 @@ public class Unordered8Map implements Map, Reopenable {
     }
 
     @Override
-    public void reopen(int keyCapacity, int heapSize) {
+    public void reopen(int keyCapacity, long heapSize) {
         if (memStart == 0) {
             keyCapacity = (int) (keyCapacity / loadFactor);
             initialKeyCapacity = Math.max(Numbers.ceilPow2(keyCapacity), MIN_KEY_CAPACITY);
@@ -470,8 +492,8 @@ public class Unordered8Map implements Map, Reopenable {
 
         @Override
         public void copyFrom(MapKey srcKey) {
-            Key srcFastKey = (Key) srcKey;
-            copyFromRawKey(srcFastKey.startAddress());
+            Key src8Key = (Key) srcKey;
+            copyFromRawKey(src8Key.startAddress());
         }
 
         @Override
@@ -571,6 +593,11 @@ public class Unordered8Map implements Map, Reopenable {
         public void putInt(int value) {
             Unsafe.getUnsafe().putInt(appendAddress, value);
             appendAddress += 4L;
+        }
+
+        @Override
+        public void putInterval(Interval interval) {
+            throw new UnsupportedOperationException();
         }
 
         @Override

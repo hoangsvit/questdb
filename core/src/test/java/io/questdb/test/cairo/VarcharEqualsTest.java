@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -28,6 +28,21 @@ import io.questdb.test.AbstractCairoTest;
 import org.junit.Test;
 
 public class VarcharEqualsTest extends AbstractCairoTest {
+
+    @Test
+    public void testColToCol() throws Exception {
+        assertQuery(
+                "name1\tname2\n" +
+                        "snthtneusd\tsnthtneusd\nšěčřž\tšěčřž\nšěčř\tšěčř\nsnthtneusd\tsnthtneusd\nšěčř\tšěčř\nšěčř\tšěčř\n" +
+                        "\t\nšěčř\tšěčř\nšěčřž\tšěčřž\nsntht\tsntht\nšěčř\tšěčř\n\t\nsntht\tsntht\nsnthtneusd\tsnthtneusd\n",
+                "x where name1 = name2",
+                "create table x as (select" +
+                        " rnd_varchar(null, 'sntht', 'snthtneusd', 'šěčř', 'šěčřž') name1," +
+                        " rnd_varchar(null, 'sntht', 'snthtneusd', 'šěčř', 'šěčřž') name2" +
+                        " from long_sequence(80))",
+                null
+        );
+    }
 
     @Test
     public void testConstFullyInlinedAscii() throws Exception {
@@ -77,22 +92,6 @@ public class VarcharEqualsTest extends AbstractCairoTest {
                 "name\něšščř\něšščř\něšščř\něšščř\něšščř\něšščř\n",
                 "x where name = 'ěšščř'::varchar",
                 "create table x as (select rnd_varchar(null, 'ěšščř', 'ěššč', 'ěšščřěšščř') name from long_sequence(30))",
-                null
-        );
-    }
-
-
-    @Test
-    public void testColToCol() throws Exception {
-        assertQuery(
-                "name1\tname2\n" +
-                        "snthtneusd\tsnthtneusd\nšěčřž\tšěčřž\nšěčř\tšěčř\nsnthtneusd\tsnthtneusd\nšěčř\tšěčř\nšěčř\tšěčř\n" +
-                        "\t\nšěčř\tšěčř\nšěčřž\tšěčřž\nsntht\tsntht\nšěčř\tšěčř\n\t\nsntht\tsntht\nsnthtneusd\tsnthtneusd\n",
-                "x where name1 = name2",
-                "create table x as (select" +
-                        " rnd_varchar(null, 'sntht', 'snthtneusd', 'šěčř', 'šěčřž') name1," +
-                        " rnd_varchar(null, 'sntht', 'snthtneusd', 'šěčř', 'šěčřž') name2" +
-                        " from long_sequence(80))",
                 null
         );
     }

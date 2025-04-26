@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -31,7 +31,12 @@ import io.questdb.cairo.vm.api.MemoryCMARW;
 import io.questdb.cairo.vm.api.MemoryMAR;
 import io.questdb.log.Log;
 import io.questdb.log.LogFactory;
-import io.questdb.std.*;
+import io.questdb.std.Files;
+import io.questdb.std.FilesFacade;
+import io.questdb.std.Long256Acceptor;
+import io.questdb.std.MemoryTag;
+import io.questdb.std.Numbers;
+import io.questdb.std.Vect;
 import io.questdb.std.str.LPSZ;
 import io.questdb.std.str.Utf8Sequence;
 import org.jetbrains.annotations.NotNull;
@@ -42,19 +47,23 @@ public class MemoryCMARWImpl extends AbstractMemoryCR implements MemoryCMARW, Me
     private static final Log LOG = LogFactory.getLog(MemoryCMARWImpl.class);
     private final Long256Acceptor long256Acceptor = this::putLong256;
     private long appendAddress = 0;
+    private boolean closeFdOnClose = true;
     private long extendSegmentMsb;
-    private int fd = -1;
+    private long fd = -1;
     private int madviseOpts = -1;
     private int memoryTag = MemoryTag.MMAP_DEFAULT;
     private long minMappedMemorySize = -1;
 
     public MemoryCMARWImpl(FilesFacade ff, LPSZ name, long extendSegmentSize, long size, int memoryTag, long opts) {
-        super(false);
         of(ff, name, extendSegmentSize, size, memoryTag, opts, -1);
     }
 
     public MemoryCMARWImpl() {
-        super(false);
+    }
+
+    @Override
+    public long addressHi() {
+        return lim;
     }
 
     @Override
@@ -69,6 +78,11 @@ public class MemoryCMARWImpl extends AbstractMemoryCR implements MemoryCMARW, Me
     public long appendAddressFor(long offset, long bytes) {
         checkAndExtend(pageAddress + offset + bytes);
         return pageAddress + offset;
+    }
+
+    @Override
+    public void changeSize(long dataSize) {
+        throw new UnsupportedOperationException();
     }
 
     @Override
@@ -91,8 +105,8 @@ public class MemoryCMARWImpl extends AbstractMemoryCR implements MemoryCMARW, Me
                         }
                     } catch (CairoException e) {
                         LOG.error().$("cannot determine file length to safely truncate [fd=").$(fd)
+                                .$(", msg=").$(e.getFlyweightMessage())
                                 .$(", errno=").$(e.getErrno())
-                                .$(", error=").$(e.getFlyweightMessage())
                                 .I$();
                     }
                 }
@@ -102,13 +116,20 @@ public class MemoryCMARWImpl extends AbstractMemoryCR implements MemoryCMARW, Me
             ff.munmap(pageAddress, size, memoryTag);
             this.pageAddress = 0;
             try {
-                Vm.bestEffortClose(ff, LOG, fd, truncateSize, truncateMode);
+                if (closeFdOnClose) {
+                    Vm.bestEffortClose(ff, LOG, fd, truncateSize, truncateMode);
+                } else {
+                    Vm.bestEffortTruncate(ff, LOG, fd, truncateSize, truncateMode);
+                }
             } finally {
                 fd = -1;
             }
         }
-        if (ff != null && ff.close(fd)) {
-            LOG.debug().$("closed [fd=").$(fd).$(']').$();
+        if (ff != null) {
+            if (closeFdOnClose) {
+                ff.close(fd);
+                LOG.debug().$("closed [fd=").$(fd).I$();
+            }
             fd = -1;
         }
         size = 0;
@@ -117,7 +138,24 @@ public class MemoryCMARWImpl extends AbstractMemoryCR implements MemoryCMARW, Me
 
     @Override
     public void close() {
+        // we have to clear the underling memory
+        // to ensure direct strings obtained from
+        // this memory do not segfault
+        clear();
         close(true);
+    }
+
+    @Override
+    public long detachFdClose() {
+        try {
+            long fd = this.fd;
+            this.closeFdOnClose = false;
+            close();
+            assert this.fd == -1;
+            return fd;
+        } finally {
+            closeFdOnClose = true;
+        }
     }
 
     @Override
@@ -148,7 +186,7 @@ public class MemoryCMARWImpl extends AbstractMemoryCR implements MemoryCMARW, Me
     }
 
     @Override
-    public int getFd() {
+    public long getFd() {
         return fd;
     }
 
@@ -179,12 +217,13 @@ public class MemoryCMARWImpl extends AbstractMemoryCR implements MemoryCMARW, Me
             map(ff, name, size, memoryTag);
         } catch (Throwable th) {
             ff.close(fd);
+            fd = -1;
             throw th;
         }
     }
 
     @Override
-    public void of(FilesFacade ff, int fd, @Nullable LPSZ fileName, long size, int memoryTag) {
+    public void of(FilesFacade ff, long fd, @Nullable LPSZ fileName, long size, int memoryTag) {
         close();
         assert fd > 0;
         this.ff = ff;
@@ -195,7 +234,8 @@ public class MemoryCMARWImpl extends AbstractMemoryCR implements MemoryCMARW, Me
     }
 
     @Override
-    public void of(FilesFacade ff, int fd, @Nullable LPSZ fileName, long extendSegmentSize, long size, int memoryTag) {
+    public void of(FilesFacade ff, long fd, boolean keepFdOpen, @Nullable LPSZ fileName, long extendSegmentSize, long size, int memoryTag) {
+        this.closeFdOnClose = !keepFdOpen;
         of(ff, fd, null, size, memoryTag);
         this.extendSegmentMsb = Numbers.msb(extendSegmentSize);
     }
@@ -217,7 +257,9 @@ public class MemoryCMARWImpl extends AbstractMemoryCR implements MemoryCMARW, Me
     }
 
     @Override
-    public void switchTo(int fd, long offset, boolean truncate, byte truncateMode) {
+    public void switchTo(FilesFacade ff, long fd, long extendSegmentSize, long offset, boolean truncate, byte truncateMode) {
+        this.ff = ff;
+        this.extendSegmentMsb = Numbers.msb(extendSegmentSize);
         close(truncate, truncateMode);
         this.fd = fd;
         map(ff, null, offset, memoryTag);

@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -25,7 +25,10 @@
 package io.questdb.griffin.engine.join;
 
 import io.questdb.cairo.sql.Record;
-import io.questdb.cairo.sql.*;
+import io.questdb.cairo.sql.RecordCursor;
+import io.questdb.cairo.sql.RecordCursorFactory;
+import io.questdb.cairo.sql.RecordMetadata;
+import io.questdb.cairo.sql.SqlExecutionCircuitBreaker;
 import io.questdb.griffin.PlanSink;
 import io.questdb.griffin.SqlException;
 import io.questdb.griffin.SqlExecutionContext;
@@ -50,7 +53,14 @@ public class LtJoinNoKeyRecordCursorFactory extends AbstractJoinRecordCursorFact
     }
 
     @Override
+    public boolean followedOrderByAdvice() {
+        return masterFactory.followedOrderByAdvice();
+    }
+
+    @Override
     public RecordCursor getCursor(SqlExecutionContext executionContext) throws SqlException {
+        // Forcefully disable column pre-touch for nested filter queries.
+        executionContext.setColumnPreTouchEnabled(false);
         RecordCursor masterCursor = masterFactory.getCursor(executionContext);
         RecordCursor slaveCursor = null;
         try {
@@ -62,11 +72,6 @@ public class LtJoinNoKeyRecordCursorFactory extends AbstractJoinRecordCursorFact
             Misc.free(masterCursor);
             throw e;
         }
-    }
-
-    @Override
-    public boolean followedOrderByAdvice() {
-        return masterFactory.followedOrderByAdvice();
     }
 
     @Override
@@ -88,9 +93,9 @@ public class LtJoinNoKeyRecordCursorFactory extends AbstractJoinRecordCursorFact
 
     @Override
     protected void _close() {
-        ((JoinRecordMetadata) getMetadata()).close();
-        masterFactory.close();
-        slaveFactory.close();
+        Misc.freeIfCloseable(getMetadata());
+        Misc.free(masterFactory);
+        Misc.free(slaveFactory);
     }
 
     private static class LtJoinNoKeyJoinRecordCursor extends AbstractJoinCursor {

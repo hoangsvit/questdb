@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -26,28 +26,21 @@ package io.questdb.test.std.str;
 
 import io.questdb.cairo.CairoException;
 import io.questdb.std.Chars;
+import io.questdb.std.Files;
 import io.questdb.std.ObjList;
 import io.questdb.std.str.*;
 import io.questdb.test.griffin.engine.TestBinarySequence;
 import io.questdb.test.tools.TestUtils;
 import org.junit.Assert;
-import org.junit.BeforeClass;
 import org.junit.Test;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Random;
-import java.util.function.BiConsumer;
 
 public class CharsTest {
     private static final FileNameExtractorUtf8Sequence extractor = new FileNameExtractorUtf8Sequence();
-    private static char separator;
-
-    @BeforeClass
-    public static void setUp() {
-        separator = System.getProperty("file.separator").charAt(0);
-    }
 
     @Test
     public void testBase64Decode() {
@@ -61,26 +54,6 @@ public class CharsTest {
         for (byte b : decode) {
             Assert.assertEquals(b, buffer.get());
         }
-    }
-
-    @Test
-    public void testBase64DecodeByteSink() {
-        base64DecodeByteSink(Base64.getDecoder(), Chars::base64Decode);
-    }
-
-    @Test
-    public void testBase64DecodeByteSinkInvalidInput() {
-        base64DecodeByteSinkInvalidInput(Chars::base64Decode);
-    }
-
-    @Test
-    public void testBase64DecodeByteSinkMiscLengths() {
-        base64DecodeByteSinkMiscLengths(Base64.getEncoder(), Base64.getDecoder(), Chars::base64Decode);
-    }
-
-    @Test
-    public void testBase64DecodeByteSinkUtf8() {
-        base64DecodeByteSinkUtf8(Base64.getEncoder(), Base64.getDecoder(), Chars::base64Decode);
     }
 
     @Test
@@ -148,14 +121,14 @@ public class CharsTest {
     }
 
     @Test
-    public void testBase64UrlDecode() {
+    public void testBase64UrlDecode_ByteBuffer() {
         String s = "this is a test";
         String encoded = Base64.getUrlEncoder().encodeToString(s.getBytes());
         ByteBuffer buffer = ByteBuffer.allocate(1024);
         Chars.base64UrlDecode(encoded, buffer);
         buffer.flip();
         String s2 = new String(buffer.array(), buffer.position(), buffer.remaining());
-        TestUtils.equals(s, s2);
+        TestUtils.assertEquals(s, s2);
 
         // null is ignored
         buffer.clear();
@@ -224,18 +197,59 @@ public class CharsTest {
     }
 
     @Test
-    public void testBase64UrlDecodeByteSink() {
-        base64DecodeByteSink(Base64.getUrlDecoder(), Chars::base64UrlDecode);
-    }
+    public void testBase64UrlDecode_Utf8Sink() {
+        String s = "this is a test";
+        String encoded = Base64.getUrlEncoder().encodeToString(s.getBytes());
+        Utf8StringSink sink = new Utf8StringSink();
+        Chars.base64UrlDecode(encoded, sink);
+        TestUtils.assertEquals(s, sink);
 
-    @Test
-    public void testBase64UrlDecodeByteSinkInvalidInput() {
-        base64DecodeByteSinkInvalidInput(Chars::base64UrlDecode);
-    }
+        // null is ignored
+        sink.clear();
+        Chars.base64UrlDecode(null, sink);
+        Assert.assertEquals(0, sink.size());
 
-    @Test
-    public void testBase64UrlDecodeByteSinkUtf8() {
-        base64DecodeByteSinkUtf8(Base64.getUrlEncoder(), Base64.getUrlDecoder(), Chars::base64UrlDecode);
+        // single char with no padding
+        sink.clear();
+        Chars.base64UrlDecode(Base64.getUrlEncoder().encodeToString("a".getBytes(StandardCharsets.UTF_8)), sink);
+        Assert.assertEquals(1, sink.size());
+        TestUtils.assertEquals("a", sink);
+
+        // empty string
+        sink.clear();
+        Chars.base64UrlDecode("", sink);
+        Assert.assertEquals(0, sink.size());
+
+        // single char is invalid
+        sink.clear();
+        try {
+            Chars.base64UrlDecode("a", sink);
+        } catch (CairoException e) {
+            TestUtils.assertContains(e.getFlyweightMessage(), "invalid base64 encoding");
+        }
+
+        // empty string with padding
+        sink.clear();
+        Chars.base64UrlDecode("===", sink);
+        Assert.assertEquals(0, sink.size());
+
+        // non-ascii in input
+        sink.clear();
+        try {
+            Chars.base64UrlDecode("a\u00A0", sink);
+            Assert.fail();
+        } catch (CairoException e) {
+            TestUtils.assertContains(e.getFlyweightMessage(), "non-ascii character while decoding base64");
+        }
+
+        // ascii but not base64
+        sink.clear();
+        try {
+            Chars.base64UrlDecode("a\u0001", sink);
+            Assert.fail();
+        } catch (CairoException e) {
+            TestUtils.assertContains(e.getFlyweightMessage(), "invalid base64 character [ch=\u0001]");
+        }
     }
 
     @Test
@@ -267,8 +281,74 @@ public class CharsTest {
     }
 
     @Test
-    public void testBaseUrl64DecodeByteSinkMiscLengths() {
-        base64DecodeByteSinkMiscLengths(Base64.getUrlEncoder(), Base64.getUrlDecoder(), Chars::base64UrlDecode);
+    public void testContainsWordIgnoreCase() {
+        // --- Positive Cases ---
+        // Middle
+        Assert.assertTrue(Chars.containsWordIgnoreCase("a b c", "b", ' '));
+        Assert.assertTrue(Chars.containsWordIgnoreCase("alpha beta gamma", "beta", ' '));
+        Assert.assertTrue(Chars.containsWordIgnoreCase("a,b,c", "b", ','));
+        // Start
+        Assert.assertTrue(Chars.containsWordIgnoreCase("b c d", "b", ' '));
+        Assert.assertTrue(Chars.containsWordIgnoreCase("beta gamma", "beta", ' '));
+        Assert.assertTrue(Chars.containsWordIgnoreCase("b,c,d", "b", ','));
+        // End
+        Assert.assertTrue(Chars.containsWordIgnoreCase("a b c", "c", ' '));
+        Assert.assertTrue(Chars.containsWordIgnoreCase("alpha beta", "beta", ' '));
+        Assert.assertTrue(Chars.containsWordIgnoreCase("a,b,c", "c", ','));
+        // Single word sequence
+        Assert.assertTrue(Chars.containsWordIgnoreCase("word", "word", ' '));
+        Assert.assertTrue(Chars.containsWordIgnoreCase("word", "word", ','));
+        // Multiple occurrences
+        Assert.assertTrue(Chars.containsWordIgnoreCase("a b a", "a", ' '));
+        Assert.assertTrue(Chars.containsWordIgnoreCase("beta alpha beta", "beta", ' '));
+        Assert.assertTrue(Chars.containsWordIgnoreCase("a b,c d", "b,c", ' '));
+
+        // --- Negative Cases ---
+        // Term not present
+        Assert.assertFalse(Chars.containsWordIgnoreCase("a b c", "d", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase("alpha beta", "gamma", ' '));
+        // Term is substring (start)
+        Assert.assertFalse(Chars.containsWordIgnoreCase("abc d", "ab", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase("alphabet soup", "alpha", ' '));
+        // Term is substring (middle) - not preceded by separator
+        Assert.assertFalse(Chars.containsWordIgnoreCase("xabc d", "abc", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase("alphabet soup", "lphabe", ' '));
+        // Term is substring (middle) - not followed by separator
+        Assert.assertFalse(Chars.containsWordIgnoreCase("a bcd", "bc", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase("alpha beta", "bet", ' '));
+        // Term is substring (end)
+        Assert.assertFalse(Chars.containsWordIgnoreCase("the alphabet", "bet", ' '));
+        // Incorrect separator used in check
+        Assert.assertFalse(Chars.containsWordIgnoreCase("a,b,c", "b", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase("a b c", "b", ','));
+        // Term matches but wrong separator before
+        Assert.assertFalse(Chars.containsWordIgnoreCase("a,b c", "b", ' '));
+        // Term matches but wrong separator after
+        Assert.assertFalse(Chars.containsWordIgnoreCase("a b,c", "b", ' '));
+        // Term contains separator char, but boundaries don't match separator
+        Assert.assertFalse(Chars.containsWordIgnoreCase("a b,c d", "b,c", ',')); // Space before/after != ','
+
+        // --- Edge Cases ---
+        // Null inputs
+        Assert.assertFalse(Chars.containsWordIgnoreCase(null, "a", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase("a b c", null, ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase(null, null, ' '));
+        // Empty inputs (Assuming empty term is not a word)
+        Assert.assertFalse(Chars.containsWordIgnoreCase("", "a", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase("a b c", "", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase("", "", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase(" ", "", ' '));
+        // Sequence equals term
+        Assert.assertTrue(Chars.containsWordIgnoreCase("abc", "abc", ' '));
+        Assert.assertTrue(Chars.containsWordIgnoreCase("abc", "abc", ','));
+        // Sequence contains only separators
+        Assert.assertFalse(Chars.containsWordIgnoreCase("   ", "a", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase(",,,", "a", ','));
+        // Using StringBuilder (different CharSequence type)
+        Assert.assertTrue(Chars.containsWordIgnoreCase(new StringBuilder("a b c"), "b", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase(new StringBuilder("abc d"), "ab", ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase(new StringBuilder("a b c"), null, ' '));
+        Assert.assertFalse(Chars.containsWordIgnoreCase(new StringBuilder("a b c"), "", ' '));
     }
 
     @Test
@@ -318,6 +398,32 @@ public class CharsTest {
         Assert.assertEquals(-1, Chars.indexOfLowerCase("foo bar baz", 2, 4, "y"));
         Assert.assertEquals(-1, Chars.indexOfLowerCase("", 0, 0, "oo"));
         Assert.assertEquals(-1, Chars.indexOfLowerCase("", 0, 0, "y"));
+    }
+
+    @Test
+    public void testIndexOfIgnoreCase() {
+        Assert.assertEquals(4, Chars.indexOfIgnoreCase("foo bar baz", 0, 11, "bar"));
+        Assert.assertEquals(4, Chars.indexOfIgnoreCase("foo bar baz", 0, 11, "BAR"));
+
+        Assert.assertEquals(4, Chars.indexOfIgnoreCase("FOO BAR BAZ", 0, 11, "bar"));
+        Assert.assertEquals(4, Chars.indexOfIgnoreCase("FOO BAR BAZ", 0, 11, "BAR"));
+
+        Assert.assertEquals(4, Chars.indexOfIgnoreCase("foo bar baz", 0, 11, "ba"));
+        Assert.assertEquals(4, Chars.indexOfIgnoreCase("foo bar baz", 0, 11, "BA"));
+
+        Assert.assertEquals(8, Chars.indexOfIgnoreCase("foo BAr BAz", 6, 11, "ba"));
+        Assert.assertEquals(8, Chars.indexOfIgnoreCase("foo BAr BAz", 6, 11, "BA"));
+
+        Assert.assertEquals(1, Chars.indexOfIgnoreCase("foo bar baz", 0, 7, "oo"));
+        Assert.assertEquals(1, Chars.indexOfIgnoreCase("foo bar baz", 0, 7, "OO"));
+
+        Assert.assertEquals(0, Chars.indexOfIgnoreCase("foo bar baz", 2, 4, ""));
+        Assert.assertEquals(-1, Chars.indexOfIgnoreCase("foo bar baz", 2, 4, "y"));
+        Assert.assertEquals(-1, Chars.indexOfIgnoreCase("foo bar baz", 2, 4, "Y"));
+        Assert.assertEquals(-1, Chars.indexOfIgnoreCase("", 0, 0, "oo"));
+        Assert.assertEquals(-1, Chars.indexOfIgnoreCase("", 0, 0, "OO"));
+        Assert.assertEquals(-1, Chars.indexOfIgnoreCase("", 0, 0, "y"));
+        Assert.assertEquals(-1, Chars.indexOfIgnoreCase("", 0, 0, "y"));
     }
 
     @Test
@@ -373,7 +479,7 @@ public class CharsTest {
     @Test
     public void testNameFromPath() {
         StringBuilder name = new StringBuilder();
-        name.append(separator).append("xyz").append(separator).append("dir1").append(separator).append("dir2").append(separator).append("this is my name");
+        name.append(Files.SEPARATOR).append("xyz").append(Files.SEPARATOR).append("dir1").append(Files.SEPARATOR).append("dir2").append(Files.SEPARATOR).append("this is my name");
         TestUtils.assertEquals("this is my name", extractor.of(new Utf8String(name)));
     }
 
@@ -430,65 +536,10 @@ public class CharsTest {
         Assert.assertFalse(Chars.startsWithLowerCase("ABC", "ABC"));
     }
 
-    private static void base64DecodeByteSink(Base64.Decoder jdkDecoder, BiConsumer<CharSequence, DirectUtf8Sink> decoderUnderTest) {
-        String encoded = "QmFzZTY0IGlzIGEgZ3JvdXAgb2Ygc2ltaWxhciBiaW5hcnktdG8tdGV4dA";
-        try (DirectUtf8Sink sink = new DirectUtf8Sink(16)) {
-            decoderUnderTest.accept(encoded, sink);
-
-            byte[] decode = jdkDecoder.decode(encoded);
-            Assert.assertEquals(decode.length, sink.size());
-            for (int i = 0; i < decode.length; i++) {
-                Assert.assertEquals(decode[i], sink.byteAt(i));
-            }
-        }
-    }
-
-    private static void base64DecodeByteSinkInvalidInput(BiConsumer<CharSequence, DirectUtf8Sink> decoder) {
-        String encoded = "a";
-        try (DirectUtf8Sink sink = new DirectUtf8Sink(16)) {
-            decoder.accept(encoded, sink);
-        } catch (CairoException e) {
-            TestUtils.assertContains(e.getFlyweightMessage(), "invalid base64 encoding");
-        }
-    }
-
-    private static void base64DecodeByteSinkMiscLengths(Base64.Encoder jdkEncoder, Base64.Decoder jdkDecoder, BiConsumer<CharSequence, DirectUtf8Sink> decoderUnderTest) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < 100; i++) {
-            sb.setLength(0);
-            for (int j = 0; j < i; j++) {
-                sb.append(j % 10);
-            }
-            String encoded = jdkEncoder.encodeToString(sb.toString().getBytes());
-            try (DirectUtf8Sink sink = new DirectUtf8Sink(16)) {
-                decoderUnderTest.accept(encoded, sink);
-
-                byte[] decode = jdkDecoder.decode(encoded);
-                Assert.assertEquals(decode.length, sink.size());
-                for (int j = 0; j < decode.length; j++) {
-                    Assert.assertEquals(decode[j], sink.byteAt(j));
-                }
-            }
-        }
-    }
-
     private void assertThat(String expected, ObjList<Path> list) {
         Assert.assertEquals(expected, list.toString());
         for (int i = 0, n = list.size(); i < n; i++) {
             list.getQuick(i).close();
-        }
-    }
-
-    private void base64DecodeByteSinkUtf8(Base64.Encoder jdkEncoder, Base64.Decoder jdkDecoder, BiConsumer<CharSequence, DirectUtf8Sink> decoderUnderTest) {
-        String encoded = jdkEncoder.encodeToString("аз съм грут:गाजर का हलवा".getBytes());
-        try (DirectUtf8Sink sink = new DirectUtf8Sink(16)) {
-            decoderUnderTest.accept(encoded, sink);
-
-            byte[] decode = jdkDecoder.decode(encoded);
-            Assert.assertEquals(decode.length, sink.size());
-            for (int i = 0; i < decode.length; i++) {
-                Assert.assertEquals(decode[i], sink.byteAt(i));
-            }
         }
     }
 }

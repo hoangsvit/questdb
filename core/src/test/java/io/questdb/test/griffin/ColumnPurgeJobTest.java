@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -49,18 +49,129 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     @Before
     public void setUpUpdates() {
         iteration = 1;
-        currentMicros = 0;
+        setCurrentMicros(0);
         node1.setProperty(PropertyKey.CAIRO_SQL_COLUMN_PURGE_RETRY_DELAY, 1);
+    }
+
+    @Test
+    public void testConvertColumn() throws Exception {
+        assertMemoryLeak(() -> {
+            try (ColumnPurgeJob purgeJob = createPurgeJob()) {
+                execute("create table up_part_o3_many as" +
+                        " (select timestamp_sequence('1970-01-01T02', 24 * 60 * 60 * 1000000L) ts," +
+                        " x," +
+                        " rnd_str('a', 'b', 'c', 'd') str," +
+                        " rnd_symbol('A', 'B', 'C', 'D') sym1," +
+                        " rnd_symbol('1', '2', '3', '4') sym2" +
+                        " from long_sequence(5)), index(sym2)" +
+                        " timestamp(ts) PARTITION BY DAY");
+
+                try (TableReader rdr1 = getReader("up_part_o3_many")) {
+                    execute("insert into up_part_o3_many " +
+                            " select timestamp_sequence('1970-01-02T01', 24 * 60 * 60 * 1000000L) ts," +
+                            " x," +
+                            " rnd_str('a', 'b', 'c', 'd') str," +
+                            " rnd_symbol('A', 'B', 'C', 'D') sym1," +
+                            " rnd_symbol('1', '2', '3', '4') sym2" +
+                            " from long_sequence(3)");
+
+                    try (TableReader ignored = getReader("up_part_o3_many")) {
+                        update("ALTER TABLE up_part_o3_many alter column sym2 type varchar");
+                        runPurgeJob(purgeJob);
+
+                        setCurrentMicros(currentMicros + 1);
+                    }
+                    rdr1.openPartition(0);
+                }
+
+                String[] partitions = new String[]{"1970-01-03.1", "1970-01-04.1", "1970-01-05"};
+                try (Path path = new Path()) {
+                    assertIndexFilesExist(partitions, path, "up_part_o3_many", "", true);
+
+                    runPurgeJob(purgeJob);
+
+                    assertIndexFilesExist(partitions, path, "up_part_o3_many", "", false);
+                }
+            }
+        });
+    }
+
+    @Test
+    public void testDropIndex() throws Exception {
+        assertMemoryLeak(() -> {
+            try (ColumnPurgeJob purgeJob = createPurgeJob()) {
+                execute("create table up_part_o3_many as" +
+                        " (select timestamp_sequence('1970-01-01T02', 24 * 60 * 60 * 1000000L) ts," +
+                        " x," +
+                        " rnd_str('a', 'b', 'c', 'd') str," +
+                        " rnd_symbol('A', 'B', 'C', 'D') sym1," +
+                        " rnd_symbol('1', '2', '3', '4') sym2" +
+                        " from long_sequence(5)), index(sym2)" +
+                        " timestamp(ts) PARTITION BY DAY");
+
+                try (TableReader rdr1 = getReader("up_part_o3_many")) {
+                    execute("insert into up_part_o3_many " +
+                            " select timestamp_sequence('1970-01-02T01', 24 * 60 * 60 * 1000000L) ts," +
+                            " x," +
+                            " rnd_str('a', 'b', 'c', 'd') str," +
+                            " rnd_symbol('A', 'B', 'C', 'D') sym1," +
+                            " rnd_symbol('1', '2', '3', '4') sym2" +
+                            " from long_sequence(3)");
+
+                    try (TableReader ignored = getReader("up_part_o3_many")) {
+                        update("ALTER TABLE up_part_o3_many alter column sym2 drop index");
+                        runPurgeJob(purgeJob);
+
+                        setCurrentMicros(currentMicros + 1);
+                    }
+                    rdr1.openPartition(0);
+                }
+
+                String[] partitions = new String[]{"1970-01-03.1", "1970-01-04.1", "1970-01-05"};
+                try (Path path = new Path()) {
+                    assertIndexFilesExist(partitions, path, "up_part_o3_many", "", true);
+
+                    runPurgeJob(purgeJob);
+
+                    assertIndexFilesExist(partitions, path, "up_part_o3_many", "", false);
+                }
+
+                Assert.assertEquals(0, purgeJob.getOutstandingPurgeTasks());
+
+                try (TableReader rdr1 = getReader("up_part_o3_many")) {
+                    try (TableReader ignored = getReader("up_part_o3_many")) {
+                        update("ALTER TABLE up_part_o3_many alter column sym2 add index");
+                        runPurgeJob(purgeJob);
+
+                        try (TableReader ignored2 = getReader("up_part_o3_many")) {
+                            update("ALTER TABLE up_part_o3_many alter column sym2 drop index");
+                            runPurgeJob(purgeJob);
+                        }
+                        setCurrentMicros(currentMicros + 1);
+                    }
+                    rdr1.openPartition(0);
+                }
+
+                try (Path path = new Path()) {
+                    assertIndexFilesExist(partitions, path, "up_part_o3_many", ".2", true);
+
+                    runPurgeJob(purgeJob);
+
+                    assertIndexFilesExist(partitions, path, "up_part_o3_many", ".2", false);
+                }
+
+                Assert.assertEquals(0, purgeJob.getOutstandingPurgeTasks());
+            }
+        });
     }
 
     @Test
     public void testHandlesDroppedTablesAfterRestart() throws Exception {
         assertMemoryLeak(() -> {
-            currentMicros = 0;
+            setCurrentMicros(0);
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
                 createTable("up_part_o3");
                 createTable("up_part_o3_2");
-
 
                 drainWalQueue();
                 try (TableReader rdr = getReader("up_part_o3")) {
@@ -69,7 +180,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                         update("UPDATE up_part_o3_2 SET x = 100, str='abcd', sym2='EE' WHERE ts >= '1970-01-03'");
                         drainWalQueue();
 
-                        drop("drop table up_part_o3");
+                        execute("drop table up_part_o3");
 
                         runPurgeJob(purgeJob);
                         rdr.openPartition(0);
@@ -101,28 +212,17 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
 
             // Check logging is ok. This test reproduces logging failure because of exception in the middle of logging.
             // The result can be that this loop never finishes.
-            for(int i = 0; i < 1025; i++) {
+            for (int i = 0; i < 1025; i++) {
                 LOG.infoW().$("test").$();
             }
         });
-    }
-
-    private static void createTable(String upPartO3) throws SqlException {
-        ddl("create table " + upPartO3 + " as" +
-                " (select timestamp_sequence('1970-01-01T02', 24 * 60 * 60 * 1000000L) ts," +
-                " x," +
-                " rnd_str('a', 'b', 'c', 'd') str," +
-                " rnd_symbol('A', 'B', 'C', 'D') sym1," +
-                " rnd_symbol('1', '2', '3', '4') sym2" +
-                " from long_sequence(5)), index(sym2)" +
-                " timestamp(ts) PARTITION BY DAY WAL");
     }
 
     @Test
     public void testManyUpdatesInserts() throws Exception {
         assertMemoryLeak(() -> {
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table up_part_o3_many as" +
+                execute("create table up_part_o3_many as" +
                         " (select timestamp_sequence('1970-01-01T02', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -132,7 +232,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                         " timestamp(ts) PARTITION BY DAY");
 
                 try (TableReader rdr1 = getReader("up_part_o3_many")) {
-                    compile("insert into up_part_o3_many " +
+                    execute("insert into up_part_o3_many " +
                             " select timestamp_sequence('1970-01-02T01', 24 * 60 * 60 * 1000000L) ts," +
                             " x," +
                             " rnd_str('a', 'b', 'c', 'd') str," +
@@ -144,7 +244,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                         update("UPDATE up_part_o3_many SET x = 100, str='u1', sym2='EE' WHERE ts >= '1970-01-03'");
                         runPurgeJob(purgeJob);
 
-                        currentMicros++;
+                        setCurrentMicros(currentMicros + 1);
                         try (TableReader rdr3 = getReader("up_part_o3_many")) {
                             update("UPDATE up_part_o3_many SET x = 200, str='u2', sym2='EE' WHERE x = 100");
                             runPurgeJob(purgeJob);
@@ -209,7 +309,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     @Test
     public void testPurge() throws Exception {
         assertMemoryLeak(() -> {
-            currentMicros = 0;
+            setCurrentMicros(0);
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
                 TableToken tn1 = new TableToken("tbl_name", "tbl_name", 123, false, false, false);
                 ColumnPurgeTask task = createTask(tn1, "col", 1, ColumnType.INT, 43, 11, "2022-03-29", -1);
@@ -239,19 +339,18 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     @Test
     public void testPurgeCannotAllocateFailure() throws Exception {
         assertMemoryLeak(() -> {
-            currentMicros = 0;
+            setCurrentMicros(0);
             ff = new TestFilesFacadeImpl() {
-
                 @Override
-                public boolean allocate(int fd, long size) {
+                public boolean allocate(long fd, long size) {
                     if (this.fd == fd) {
                         throw new RuntimeException("TEST ERROR");
                     }
                     return super.allocate(fd, size);
                 }
 
-                public int openRW(LPSZ name, long opts) {
-                    int fd = super.openRW(name, opts);
+                public long openRW(LPSZ name, long opts) {
+                    long fd = super.openRW(name, opts);
                     if (Utf8s.endsWithAscii(name, "completed.d")) {
                         this.fd = fd;
                     }
@@ -260,7 +359,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
             };
 
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table up_part as" +
+                execute("create table up_part as" +
                         " (select timestamp_sequence('1970-01-01', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -302,9 +401,9 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     @Test
     public void testPurgeHandlesLogPartitionChange() throws Exception {
         assertMemoryLeak(() -> {
-            currentMicros = Timestamps.DAY_MICROS * 30;
+            setCurrentMicros(Timestamps.DAY_MICROS * 30);
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table up_part_o3 as" +
+                execute("create table up_part_o3 as" +
                         " (select timestamp_sequence('1970-01-01T02', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -313,7 +412,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                         " from long_sequence(5)), index(sym2)" +
                         " timestamp(ts) PARTITION BY DAY");
 
-                compile("insert into up_part_o3 " +
+                execute("insert into up_part_o3 " +
                         " select timestamp_sequence('1970-01-02T01', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -329,7 +428,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                 }
             }
 
-            currentMicros = Timestamps.DAY_MICROS * 32;
+            setCurrentMicros(Timestamps.DAY_MICROS * 32);
             try (Path path = new Path()) {
                 String[] partitions = new String[]{"1970-01-03.1", "1970-01-04.1", "1970-01-05"};
                 assertFilesExist(partitions, path, "up_part_o3", "", true);
@@ -377,7 +476,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     @Test
     public void testPurgeIOFailureRetried() throws Exception {
         assertMemoryLeak(() -> {
-            currentMicros = 0;
+            setCurrentMicros(0);
             ff = new TestFilesFacadeImpl() {
                 int count = 0;
 
@@ -393,7 +492,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
             };
 
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table up_part as" +
+                execute("create table up_part as" +
                         " (select timestamp_sequence('1970-01-01', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -416,8 +515,8 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                     runPurgeJob(purgeJob);
                     // Delete failure
                     TableToken tableToken = engine.verifyTableName("up_part");
-                    path.of(configuration.getRoot()).concat(tableToken).concat("1970-01-02").concat("str.i").$();
-                    Assert.assertTrue(Utf8s.toString(path), TestFilesFacadeImpl.INSTANCE.exists(path));
+                    path.of(configuration.getDbRoot()).concat(tableToken).concat("1970-01-02").concat("str.i").$();
+                    Assert.assertTrue(Utf8s.toString(path), TestFilesFacadeImpl.INSTANCE.exists(path.$()));
 
                     // Should retry
                     runPurgeJob(purgeJob);
@@ -455,9 +554,9 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     @Test
     public void testPurgeLimitsTaskLoadOnRestart() throws Exception {
         assertMemoryLeak(() -> {
-            currentMicros = 0;
+            setCurrentMicros(0);
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table up_part_o3 as" +
+                execute("create table up_part_o3 as" +
                         " (select timestamp_sequence('1970-01-01T02', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -466,7 +565,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                         " from long_sequence(5)), index(sym2)" +
                         " timestamp(ts) PARTITION BY DAY");
 
-                compile("insert into up_part_o3 " +
+                execute("insert into up_part_o3 " +
                         " select timestamp_sequence('1970-01-02T01', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -511,9 +610,9 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     @Test
     public void testPurgeRespectsOpenReaderDailyPartitioned() throws Exception {
         assertMemoryLeak(() -> {
-            currentMicros = 0;
+            setCurrentMicros(0);
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table up_part as" +
+                execute("create table up_part as" +
                         " (select timestamp_sequence('1970-01-01', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -568,7 +667,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     public void testPurgeRespectsOpenReaderNonPartitioned() throws Exception {
         assertMemoryLeak(() -> {
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table up as" +
+                execute("create table up as" +
                         " (select timestamp_sequence(0, 1000000) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -612,7 +711,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     public void testPurgeRespectsTableRecreate() throws Exception {
         assertMemoryLeak(() -> {
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table up as" +
+                execute("create table up as" +
                         " (select timestamp_sequence(0, 1000000) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -629,9 +728,9 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                 }
                 engine.releaseInactive();
 
-                drop("drop table up");
+                execute("drop table up");
 
-                ddl("create table up as" +
+                execute("create table up as" +
                         " (select timestamp_sequence(0, 1000000) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -658,7 +757,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     public void testPurgeRespectsTableTruncates() throws Exception {
         assertMemoryLeak(() -> {
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table testPurgeRespectsTableTruncates as" +
+                execute("create table testPurgeRespectsTableTruncates as" +
                         " (select timestamp_sequence(0, 1000000) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -675,9 +774,9 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                 }
                 engine.releaseInactive();
 
-                ddl("truncate table testPurgeRespectsTableTruncates");
+                execute("truncate table testPurgeRespectsTableTruncates");
 
-                ddl("insert into testPurgeRespectsTableTruncates " +
+                execute("insert into testPurgeRespectsTableTruncates " +
                         " select timestamp_sequence(0, 1000000) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -702,9 +801,9 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     @Test
     public void testPurgeRetriesAfterRestart() throws Exception {
         assertMemoryLeak(() -> {
-            currentMicros = 0;
+            setCurrentMicros(0);
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table up_part_o3 as" +
+                execute("create table up_part_o3 as" +
                         " (select timestamp_sequence('1970-01-01T02', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -713,7 +812,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                         " from long_sequence(5)), index(sym2)" +
                         " timestamp(ts) PARTITION BY DAY");
 
-                compile("insert into up_part_o3 " +
+                execute("insert into up_part_o3 " +
                         " select timestamp_sequence('1970-01-02T01', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -764,7 +863,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
         node1.setProperty(PropertyKey.CAIRO_SQL_COLUMN_PURGE_TASK_POOL_CAPACITY, 1);
         assertMemoryLeak(() -> {
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table up_part_o3_many as" +
+                execute("create table up_part_o3_many as" +
                         " (select timestamp_sequence('1970-01-01T02', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -798,9 +897,9 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     @Test
     public void testPurgeWithOutOfOrderUpdate() throws Exception {
         assertMemoryLeak(() -> {
-            currentMicros = 0;
+            setCurrentMicros(0);
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
-                ddl("create table up_part_o3 as" +
+                execute("create table up_part_o3 as" +
                         " (select timestamp_sequence('1970-01-01T02', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -809,7 +908,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                         " from long_sequence(5)), index(sym2)" +
                         " timestamp(ts) PARTITION BY DAY");
 
-                compile("insert into up_part_o3 " +
+                execute("insert into up_part_o3 " +
                         " select timestamp_sequence('1970-01-02T01', 24 * 60 * 60 * 1000000L) ts," +
                         " x," +
                         " rnd_str('a', 'b', 'c', 'd') str," +
@@ -820,7 +919,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                 try (TableReader rdr = getReader("up_part_o3")) {
                     update("UPDATE up_part_o3 SET x = 100, str='abcd', sym2 = 'EE' WHERE ts >= '1970-01-03'");
 
-                    currentMicros = 20;
+                    setCurrentMicros(20);
                     runPurgeJob(purgeJob);
                     rdr.openPartition(0);
                 }
@@ -829,7 +928,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
                     String[] partitions = new String[]{"1970-01-03.1", "1970-01-04.1", "1970-01-05"};
                     assertFilesExist(partitions, path, "up_part_o3", "", true);
 
-                    currentMicros = 40;
+                    setCurrentMicros(40);
                     runPurgeJob(purgeJob);
 
                     assertFilesExist(partitions, path, "up_part_o3", "", false);
@@ -867,7 +966,7 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
     @Test
     public void testSavesDataToPurgeLogTable() throws Exception {
         assertMemoryLeak(() -> {
-            currentMicros = 0;
+            setCurrentMicros(0);
             try (ColumnPurgeJob purgeJob = createPurgeJob()) {
                 TableToken tn1 = new TableToken("tbl_name", "tbl_name", 123, false, false, false);
                 ColumnPurgeTask task = createTask(tn1, "col", 1, ColumnType.INT, 43, 11, "2022-03-29", -1);
@@ -894,6 +993,17 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
         });
     }
 
+    private static void createTable(String upPartO3) throws SqlException {
+        execute("create table " + upPartO3 + " as" +
+                " (select timestamp_sequence('1970-01-01T02', 24 * 60 * 60 * 1000000L) ts," +
+                " x," +
+                " rnd_str('a', 'b', 'c', 'd') str," +
+                " rnd_symbol('A', 'B', 'C', 'D') sym1," +
+                " rnd_symbol('1', '2', '3', '4') sym2" +
+                " from long_sequence(5)), index(sym2)" +
+                " timestamp(ts) PARTITION BY DAY WAL");
+    }
+
     private void appendTaskToQueue(ColumnPurgeTask task) {
         long cursor = -1L;
         Sequence pubSeq = engine.getMessageBus().getColumnPurgePubSeq();
@@ -907,32 +1017,44 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
         }
     }
 
-    private void assertFilesExist(String[] partitions, Path path, String up_part, String colSuffix, boolean exist) {
+    private void assertFilesExist(String[] partitions, Path path, String tableName, String colSuffix, boolean exist) {
         for (int i = 0; i < partitions.length; i++) {
             String partition = partitions[i];
-            assertFilesExist(path, up_part, partition, colSuffix, exist);
+            assertFilesExist(path, tableName, partition, colSuffix, exist);
         }
     }
 
     private void assertFilesExist(Path path, String up_part, String partition, String colSuffix, boolean exist) {
         TableToken tableToken = engine.verifyTableName(up_part);
-        path.of(configuration.getRoot()).concat(tableToken).concat(partition).concat("x.d").put(colSuffix).$();
-        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path));
+        path.of(configuration.getDbRoot()).concat(tableToken).concat(partition).concat("x.d").put(colSuffix).$();
+        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path.$()));
 
-        path.of(configuration.getRoot()).concat(tableToken).concat(partition).concat("str.d").put(colSuffix).$();
-        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path));
+        path.of(configuration.getDbRoot()).concat(tableToken).concat(partition).concat("str.d").put(colSuffix).$();
+        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path.$()));
 
-        path.of(configuration.getRoot()).concat(tableToken).concat(partition).concat("str.i").put(colSuffix).$();
-        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path));
+        path.of(configuration.getDbRoot()).concat(tableToken).concat(partition).concat("str.i").put(colSuffix).$();
+        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path.$()));
 
-        path.of(configuration.getRoot()).concat(tableToken).concat(partition).concat("sym2.d").put(colSuffix).$();
-        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path));
+        assertIndexFilesExist(path, up_part, partition, colSuffix, exist);
+    }
 
-        path.of(configuration.getRoot()).concat(tableToken).concat(partition).concat("sym2.k").put(colSuffix).$();
-        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path));
+    private void assertIndexFilesExist(String[] partitions, Path path, String tableName, String colSuffix, boolean exist) {
+        for (int i = 0; i < partitions.length; i++) {
+            String partition = partitions[i];
+            assertIndexFilesExist(path, tableName, partition, colSuffix, exist);
+        }
+    }
 
-        path.of(configuration.getRoot()).concat(tableToken).concat(partition).concat("sym2.v").put(colSuffix).$();
-        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path));
+    private void assertIndexFilesExist(Path path, String up_part, String partition, String colSuffix, boolean exist) {
+        TableToken tableToken = engine.verifyTableName(up_part);
+        path.of(configuration.getDbRoot()).concat(tableToken).concat(partition).concat("sym2.d").put(colSuffix).$();
+        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path.$()));
+
+        path.of(configuration.getDbRoot()).concat(tableToken).concat(partition).concat("sym2.k").put(colSuffix).$();
+        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path.$()));
+
+        path.of(configuration.getDbRoot()).concat(tableToken).concat(partition).concat("sym2.v").put(colSuffix).$();
+        Assert.assertEquals(Utf8s.toString(path), exist, TestFilesFacadeImpl.INSTANCE.exists(path.$()));
     }
 
     @NotNull
@@ -958,13 +1080,13 @@ public class ColumnPurgeJobTest extends AbstractCairoTest {
 
     private void runPurgeJob(ColumnPurgeJob purgeJob) {
         engine.releaseInactive();
-        currentMicros += 10L * iteration++;
+        setCurrentMicros(currentMicros + 10L * iteration++);
         purgeJob.run(0);
-        currentMicros += 10L * iteration++;
+        setCurrentMicros(currentMicros + 10L * iteration++);
         purgeJob.run(0);
     }
 
     private void update(String updateSql) throws SqlException {
-        ddl(updateSql);
+        execute(updateSql);
     }
 }

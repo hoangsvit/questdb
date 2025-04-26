@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -24,8 +24,15 @@
 
 package io.questdb.griffin.engine.functions.catalogue;
 
-import io.questdb.cairo.*;
+import io.questdb.cairo.AbstractRecordCursorFactory;
+import io.questdb.cairo.CairoConfiguration;
+import io.questdb.cairo.CairoException;
+import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.GenericRecordMetadata;
+import io.questdb.cairo.TableColumnMetadata;
+import io.questdb.cairo.TableToken;
 import io.questdb.cairo.sql.Function;
+import io.questdb.cairo.sql.NoRandomAccessRecordCursor;
 import io.questdb.cairo.sql.Record;
 import io.questdb.cairo.sql.RecordCursor;
 import io.questdb.cairo.sql.RecordMetadata;
@@ -100,14 +107,16 @@ public class WalTransactionsFunctionFactory implements FunctionFactory {
             cursor.close();
             long txnLo = 0;
             while (true) {
+                TransactionLogCursor cursor = null;
                 try {
-                    TransactionLogCursor cursor = executionContext.getCairoEngine().getTableSequencerAPI().getCursor(tableToken, txnLo);
+                    cursor = executionContext.getCairoEngine().getTableSequencerAPI().getCursor(tableToken, txnLo);
                     cursor.toMinTxn();
                     this.cursor.logCursor = cursor;
                     break;
                 } catch (CairoException e) {
-                    if (e.errnoReadPathDoesNotExist()) {
-                        // Txn sequencer can have it's parts deleted due to housekeeping
+                    Misc.free(cursor);
+                    if (e.errnoFileCannotRead()) {
+                        // Txn sequencer can have its parts deleted due to housekeeping
                         // Need to keep scanning until we find a valid part
                         if (txnLo == 0) {
                             long writerTxn = executionContext.getCairoEngine().getTableSequencerAPI().getTxnTracker(tableToken).getWriterTxn();
@@ -134,7 +143,7 @@ public class WalTransactionsFunctionFactory implements FunctionFactory {
         }
 
 
-        private static class TableListRecordCursor implements RecordCursor {
+        private static class TableListRecordCursor implements NoRandomAccessRecordCursor {
             TransactionRecord record = new TransactionRecord();
             private TransactionLogCursor logCursor;
 
@@ -149,18 +158,8 @@ public class WalTransactionsFunctionFactory implements FunctionFactory {
             }
 
             @Override
-            public Record getRecordB() {
-                throw new UnsupportedOperationException();
-            }
-
-            @Override
             public boolean hasNext() {
                 return logCursor.hasNext();
-            }
-
-            @Override
-            public void recordAt(Record record, long atRowId) {
-                throw new UnsupportedOperationException();
             }
 
             @Override
@@ -185,7 +184,7 @@ public class WalTransactionsFunctionFactory implements FunctionFactory {
                     if (col == segmentTxnColumn) {
                         return logCursor.getSegmentTxn();
                     }
-                    return Numbers.INT_NaN;
+                    return Numbers.INT_NULL;
                 }
 
                 @Override
@@ -201,10 +200,10 @@ public class WalTransactionsFunctionFactory implements FunctionFactory {
                                 && logCursor.getTxnRowCount() > 0) {
                             return logCursor.getTxnRowCount();
                         } else {
-                            return Numbers.LONG_NaN;
+                            return Numbers.LONG_NULL;
                         }
                     }
-                    return Numbers.LONG_NaN;
+                    return Numbers.LONG_NULL;
                 }
 
                 @Override
@@ -227,7 +226,7 @@ public class WalTransactionsFunctionFactory implements FunctionFactory {
                                 && logCursor.getTxnRowCount() > 0) {
                             return logCursor.getTxnMinTimestamp();
                         } else {
-                            return Numbers.LONG_NaN;
+                            return Numbers.LONG_NULL;
                         }
                     }
                     if (col == maxTimestampColumn) {
@@ -235,10 +234,10 @@ public class WalTransactionsFunctionFactory implements FunctionFactory {
                                 && logCursor.getTxnRowCount() > 0) {
                             return logCursor.getTxnMaxTimestamp();
                         } else {
-                            return Numbers.LONG_NaN;
+                            return Numbers.LONG_NULL;
                         }
                     }
-                    return Numbers.LONG_NaN;
+                    return Numbers.LONG_NULL;
                 }
             }
         }

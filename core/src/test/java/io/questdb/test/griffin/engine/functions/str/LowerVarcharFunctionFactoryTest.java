@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -27,34 +27,33 @@ package io.questdb.test.griffin.engine.functions.str;
 import io.questdb.griffin.FunctionFactory;
 import io.questdb.griffin.SqlException;
 import io.questdb.griffin.engine.functions.str.LowerVarcharFunctionFactory;
-import io.questdb.std.str.Utf8String;
 import io.questdb.test.griffin.engine.AbstractFunctionFactoryTest;
 import org.junit.Test;
 
 public class LowerVarcharFunctionFactoryTest extends AbstractFunctionFactoryTest {
     @Test
     public void testSimple() throws SqlException {
-        call(new Utf8String("AbC")).andAssert("abc");
+        call(utf8("AbC")).andAssert("abc");
     }
 
     @Test
     public void testWithAllLowercase() throws SqlException {
-        call(new Utf8String("abcdefghijklmnopqrstuvxz")).andAssert("abcdefghijklmnopqrstuvxz");
+        call(utf8("abcdefghijklmnopqrstuvxz")).andAssert("abcdefghijklmnopqrstuvxz");
     }
 
     @Test
     public void testWithAllUppercase() throws SqlException {
-        call(new Utf8String("ABCDEFGHIJKLMNOPQRSTUVXZ")).andAssert("abcdefghijklmnopqrstuvxz");
+        call(utf8("ABCDEFGHIJKLMNOPQRSTUVXZ")).andAssert("abcdefghijklmnopqrstuvxz");
     }
 
     @Test
     public void testWithMixedCases() throws SqlException {
-        call(new Utf8String("ABCdefGHIjklMNOpqrSTUvxz")).andAssert("abcdefghijklmnopqrstuvxz");
+        call(utf8("ABCdefGHIjklMNOpqrSTUvxz")).andAssert("abcdefghijklmnopqrstuvxz");
     }
 
     @Test
     public void testWithNonAsciiCharacters() throws SqlException {
-        call(new Utf8String("abcDEFghiJKLm...() { _; } >_[$($())] { <<< (=) \noPQRstuVXZ"))
+        call(utf8("abcDEFghiJKLm...() { _; } >_[$($())] { <<< (=) \noPQRstuVXZ"))
                 .andAssert("abcdefghijklm...() { _; } >_[$($())] { <<< (=) \nopqrstuvxz");
     }
 

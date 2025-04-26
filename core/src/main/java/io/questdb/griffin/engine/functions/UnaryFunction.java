@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -31,9 +31,22 @@ import io.questdb.griffin.SqlException;
 import io.questdb.griffin.SqlExecutionContext;
 
 public interface UnaryFunction extends Function {
+
     @Override
     default void close() {
         getArg().close();
+    }
+
+    @Override
+    default void cursorClosed() {
+        getArg().cursorClosed();
+    }
+
+    @Override
+    default void offerStateTo(Function that) {
+        if (that instanceof UnaryFunction) {
+            getArg().offerStateTo(((UnaryFunction) that).getArg());
+        }
     }
 
     Function getArg();
@@ -44,22 +57,23 @@ public interface UnaryFunction extends Function {
     }
 
     @Override
-    default void initCursor() {
-        getArg().initCursor();
-    }
-
-    @Override
     default boolean isConstant() {
         return getArg().isConstant();
     }
 
     @Override
-    default boolean isReadThreadSafe() {
-        return getArg().isReadThreadSafe();
+    default boolean isNonDeterministic() {
+        return getArg().isNonDeterministic();
     }
 
+    @Override
     default boolean isRuntimeConstant() {
         return getArg().isRuntimeConstant();
+    }
+
+    @Override
+    default boolean isThreadSafe() {
+        return getArg().isThreadSafe();
     }
 
     @Override

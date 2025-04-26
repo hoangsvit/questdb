@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -45,9 +45,8 @@ public final class CountDistinctUuidGroupByFunction extends LongFunction impleme
 
     public CountDistinctUuidGroupByFunction(Function arg, int setInitialCapacity, double setLoadFactor) {
         this.arg = arg;
-        // We use zero as the default value to speed up zeroing on rehash.
-        setA = new GroupByLong128HashSet(setInitialCapacity, setLoadFactor, 0);
-        setB = new GroupByLong128HashSet(setInitialCapacity, setLoadFactor, 0);
+        setA = new GroupByLong128HashSet(setInitialCapacity, setLoadFactor, Numbers.LONG_NULL);
+        setB = new GroupByLong128HashSet(setInitialCapacity, setLoadFactor, Numbers.LONG_NULL);
     }
 
     @Override
@@ -61,12 +60,7 @@ public final class CountDistinctUuidGroupByFunction extends LongFunction impleme
         long lo = arg.getLong128Lo(record);
         long hi = arg.getLong128Hi(record);
         if (!Uuid.isNull(lo, hi)) {
-            mapValue.putLong(valueIndex, 1L);
-            // Remap zero since it's used as the no entry key.
-            if (lo == 0 && hi == 0) {
-                lo = Numbers.LONG_NaN;
-                hi = Numbers.LONG_NaN;
-            }
+            mapValue.putLong(valueIndex, 1);
             setA.of(0).add(lo, hi);
             mapValue.putLong(valueIndex + 1, setA.ptr());
         } else {
@@ -81,11 +75,6 @@ public final class CountDistinctUuidGroupByFunction extends LongFunction impleme
         long hi = arg.getLong128Hi(record);
         if (!Uuid.isNull(lo, hi)) {
             long ptr = mapValue.getLong(valueIndex + 1);
-            // Remap zero since it's used as the no entry key.
-            if (lo == 0 && hi == 0) {
-                lo = Numbers.LONG_NaN;
-                hi = Numbers.LONG_NaN;
-            }
             final long index = setA.of(ptr).keyIndex(lo, hi);
             if (index >= 0) {
                 setA.addAt(index, lo, hi);
@@ -111,6 +100,11 @@ public final class CountDistinctUuidGroupByFunction extends LongFunction impleme
     }
 
     @Override
+    public int getSampleByFlags() {
+        return GroupByFunction.SAMPLE_BY_FILL_ALL;
+    }
+
+    @Override
     public int getValueIndex() {
         return valueIndex;
     }
@@ -133,20 +127,20 @@ public final class CountDistinctUuidGroupByFunction extends LongFunction impleme
     }
 
     @Override
-    public boolean isReadThreadSafe() {
+    public boolean isThreadSafe() {
         return false;
     }
 
     @Override
     public void merge(MapValue destValue, MapValue srcValue) {
         long srcCount = srcValue.getLong(valueIndex);
-        if (srcCount == 0 || srcCount == Numbers.LONG_NaN) {
+        if (srcCount == 0 || srcCount == Numbers.LONG_NULL) {
             return;
         }
         long srcPtr = srcValue.getLong(valueIndex + 1);
 
         long destCount = destValue.getLong(valueIndex);
-        if (destCount == 0 || destCount == Numbers.LONG_NaN) {
+        if (destCount == 0 || destCount == Numbers.LONG_NULL) {
             destValue.putLong(valueIndex, srcCount);
             destValue.putLong(valueIndex + 1, srcPtr);
             return;
@@ -156,7 +150,7 @@ public final class CountDistinctUuidGroupByFunction extends LongFunction impleme
         setA.of(destPtr);
         setB.of(srcPtr);
 
-        if (setA.size() > (setB.size() >> 1)) {
+        if (setA.size() > (setB.size() >>> 1)) {
             setA.merge(setB);
             destValue.putLong(valueIndex, setA.size());
             destValue.putLong(valueIndex + 1, setA.ptr());
@@ -176,7 +170,7 @@ public final class CountDistinctUuidGroupByFunction extends LongFunction impleme
 
     @Override
     public void setEmpty(MapValue mapValue) {
-        mapValue.putLong(valueIndex, 0L);
+        mapValue.putLong(valueIndex, 0);
         mapValue.putLong(valueIndex + 1, 0);
     }
 
@@ -188,7 +182,7 @@ public final class CountDistinctUuidGroupByFunction extends LongFunction impleme
 
     @Override
     public void setNull(MapValue mapValue) {
-        mapValue.putLong(valueIndex, Numbers.LONG_NaN);
+        mapValue.putLong(valueIndex, Numbers.LONG_NULL);
         mapValue.putLong(valueIndex + 1, 0);
     }
 

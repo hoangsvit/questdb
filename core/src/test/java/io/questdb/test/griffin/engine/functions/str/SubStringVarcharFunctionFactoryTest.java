@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -37,8 +37,8 @@ public class SubStringVarcharFunctionFactoryTest extends AbstractFunctionFactory
 
     @Test
     public void testNonPositiveStart() throws Exception {
-        call(new Utf8String("foo"), -3, 4).andAssert("");
-        call(new Utf8String("foo"), -3, 5).andAssert("f");
+        call(utf8("foo"), -3, 4).andAssert("");
+        call(utf8("foo"), -3, 5).andAssert("f");
         call(null, -3, 0).andAssert(null);
     }
 
@@ -77,33 +77,33 @@ public class SubStringVarcharFunctionFactoryTest extends AbstractFunctionFactory
 
     @Test
     public void testStartOrLenOutOfRange() throws Exception {
-        call(new Utf8String("foo"), 10, 1).andAssert("");
-        call(new Utf8String("foo"), 10, 10).andAssert("");
-        call(new Utf8String("foo"), 1, 10).andAssert("foo");
+        call(utf8("foo"), 10, 1).andAssert("");
+        call(utf8("foo"), 10, 10).andAssert("");
+        call(utf8("foo"), 1, 10).andAssert("foo");
         call(null, 2, 4).andAssert(null);
     }
 
     @Test
     public void testZeroOrInvalidLength() throws Exception {
-        call(new Utf8String("foo"), 3, 0).andAssert("");
+        call(utf8("foo"), 3, 0).andAssert("");
         call(null, 3, 0).andAssert(null);
-        call(new Utf8String("foo"), 3, Numbers.INT_NaN).andAssert(null);
+        call(utf8("foo"), 3, Numbers.INT_NULL).andAssert(null);
 
         try {
-            call(new Utf8String("foo"), 3, -1).andAssert(null);
-            assertException("non-const negative len is not allowed");
+            call(utf8("foo"), 3, -1).andAssert(null);
+            assertExceptionNoLeakCheck("non-const negative len is not allowed");
         } catch (CairoException e) {
             // negative substring length is not allowed
         }
 
         try {
-            assertQuery(
+            assertQueryNoLeakCheck(
                     null,
                     "select substring('foo',1,-6)",
                     null,
                     true
             );
-            assertException("const negative len is not allowed");
+            assertExceptionNoLeakCheck("const negative len is not allowed");
         } catch (SqlException e) {
             // negative substring length is not allowed
         }

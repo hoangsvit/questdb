@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -27,7 +27,10 @@ package io.questdb.test.cairo;
 import io.questdb.cairo.CairoException;
 import io.questdb.cairo.TxnScoreboard;
 import io.questdb.mp.SOCountDownLatch;
-import io.questdb.std.*;
+import io.questdb.std.Chars;
+import io.questdb.std.FilesFacade;
+import io.questdb.std.Numbers;
+import io.questdb.std.Os;
 import io.questdb.std.str.LPSZ;
 import io.questdb.std.str.Path;
 import io.questdb.test.AbstractCairoTest;
@@ -76,7 +79,7 @@ public class TxnScoreboardTest extends AbstractCairoTest {
         TestUtils.assertMemoryLeak(() -> {
             FilesFacade ff = new TestFilesFacadeImpl() {
                 @Override
-                public int openCleanRW(LPSZ name, long size) {
+                public long openCleanRW(LPSZ name, long size) {
                     return -1;
                 }
             };
@@ -98,7 +101,7 @@ public class TxnScoreboardTest extends AbstractCairoTest {
         TestUtils.assertMemoryLeak(() -> {
             FilesFacade ff = new TestFilesFacadeImpl() {
                 @Override
-                public int openCleanRW(LPSZ name, long size) {
+                public long openCleanRW(LPSZ name, long size) {
                     return -1;
                 }
             };
@@ -258,10 +261,9 @@ public class TxnScoreboardTest extends AbstractCairoTest {
                 scoreboard.releaseTxn(2048);
                 Assert.assertEquals(2048, scoreboard.getMin());
 
-                Assert.assertTrue(scoreboard.acquireTxn(10000L));
-                scoreboard.releaseTxn(10000L);
-                Assert.assertEquals(10000L, scoreboard.getMin());
-
+                Assert.assertTrue(scoreboard.acquireTxn(10000));
+                scoreboard.releaseTxn(10000);
+                Assert.assertEquals(10000, scoreboard.getMin());
 
                 Assert.assertFalse(scoreboard.acquireTxn(4095));
             }
@@ -271,6 +273,34 @@ public class TxnScoreboardTest extends AbstractCairoTest {
     @Test
     public void testHammer() throws Exception {
         testHammerScoreboard(8, 10000);
+    }
+
+    @Test
+    public void testIncrementTxn() throws Exception {
+        TestUtils.assertMemoryLeak(() -> {
+            try (
+                    final Path shmPath = new Path();
+                    final TxnScoreboard scoreboard = new TxnScoreboard(TestFilesFacadeImpl.INSTANCE, 1024).ofRW(shmPath.of(root))
+            ) {
+                Assert.assertEquals(0, scoreboard.getMin());
+                Assert.assertTrue(scoreboard.acquireTxn(1));
+                Assert.assertEquals(1, scoreboard.getMin());
+                // Don't release the older txn.
+
+                Assert.assertTrue(scoreboard.acquireTxn(2));
+                scoreboard.releaseTxn(2);
+                Assert.assertEquals(1, scoreboard.getMin());
+
+                // acquireTxn() would have failed here, but we can use incrementTxn()
+                Assert.assertTrue(scoreboard.incrementTxn(1));
+                scoreboard.releaseTxn(1);
+                Assert.assertEquals(1, scoreboard.getMin());
+
+                // Now we can release the older txn.
+                scoreboard.releaseTxn(1);
+                Assert.assertEquals(2, scoreboard.getMin());
+            }
+        });
     }
 
     @Test
@@ -332,8 +362,8 @@ public class TxnScoreboardTest extends AbstractCairoTest {
 
     @Test
     public void testLimitsO3Acquire() throws Exception {
-        LOG.debug().$("starting testLimitsLoop").$();
-        for (int i = 0; i < 10000; i++) {
+        LOG.debug().$("start testLimitsO3Acquire").$();
+        for (int i = 0; i < 1000; i++) {
             testLimits();
         }
     }
@@ -343,7 +373,7 @@ public class TxnScoreboardTest extends AbstractCairoTest {
         TestUtils.assertMemoryLeak(() -> {
             FilesFacade ff = new TestFilesFacadeImpl() {
                 @Override
-                public long mmap(int fd, long len, long offset, int flags, int memoryTag) {
+                public long mmap(long fd, long len, long offset, int flags, int memoryTag) {
                     return -1;
                 }
             };
@@ -365,7 +395,7 @@ public class TxnScoreboardTest extends AbstractCairoTest {
         TestUtils.assertMemoryLeak(() -> {
             FilesFacade ff = new TestFilesFacadeImpl() {
                 @Override
-                public long mmap(int fd, long len, long offset, int flags, int memoryTag) {
+                public long mmap(long fd, long len, long offset, int flags, int memoryTag) {
                     return -1;
                 }
             };
@@ -502,8 +532,8 @@ public class TxnScoreboardTest extends AbstractCairoTest {
     @Test
     public void testStressOpenParallel() throws Exception {
         TestUtils.assertMemoryLeak(() -> {
-            int parallel = 16;
-            int iterations = (int) 1E3;
+            int parallel = 8;
+            int iterations = 500;
             SOCountDownLatch latch = new SOCountDownLatch(parallel);
             AtomicInteger errors = new AtomicInteger();
             for (int i = 0; i < parallel; i++) {

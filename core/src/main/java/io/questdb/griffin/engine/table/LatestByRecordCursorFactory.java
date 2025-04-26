@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -24,10 +24,23 @@
 
 package io.questdb.griffin.engine.table;
 
-import io.questdb.cairo.*;
-import io.questdb.cairo.map.*;
+import io.questdb.cairo.AbstractRecordCursorFactory;
+import io.questdb.cairo.ArrayColumnTypes;
+import io.questdb.cairo.CairoConfiguration;
+import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.ColumnTypes;
+import io.questdb.cairo.RecordSink;
+import io.questdb.cairo.map.Map;
+import io.questdb.cairo.map.MapFactory;
+import io.questdb.cairo.map.MapKey;
+import io.questdb.cairo.map.MapRecord;
+import io.questdb.cairo.map.MapValue;
+import io.questdb.cairo.sql.NoRandomAccessRecordCursor;
 import io.questdb.cairo.sql.Record;
-import io.questdb.cairo.sql.*;
+import io.questdb.cairo.sql.RecordCursor;
+import io.questdb.cairo.sql.RecordCursorFactory;
+import io.questdb.cairo.sql.SqlExecutionCircuitBreaker;
+import io.questdb.cairo.sql.SymbolTable;
 import io.questdb.griffin.PlanSink;
 import io.questdb.griffin.SqlException;
 import io.questdb.griffin.SqlExecutionContext;
@@ -77,8 +90,16 @@ public class LatestByRecordCursorFactory extends AbstractRecordCursorFactory {
 
     @Override
     public RecordCursor getCursor(SqlExecutionContext executionContext) throws SqlException {
-        cursor.of(base.getCursor(executionContext), recordSink, rowIndexes, rowIndexesInitialCapacity, executionContext.getCircuitBreaker());
-        return cursor;
+        // Forcefully disable column pre-touch for nested filter queries.
+        executionContext.setColumnPreTouchEnabled(false);
+        final RecordCursor baseCursor = base.getCursor(executionContext);
+        try {
+            cursor.of(baseCursor, recordSink, rowIndexes, rowIndexesInitialCapacity, executionContext.getCircuitBreaker());
+            return cursor;
+        } catch (Throwable th) {
+            cursor.close();
+            throw th;
+        }
     }
 
     @Override
@@ -104,9 +125,9 @@ public class LatestByRecordCursorFactory extends AbstractRecordCursorFactory {
 
     @Override
     protected void _close() {
-        rowIndexes.close();
-        cursor.close();
-        base.close();
+        Misc.free(rowIndexes);
+        Misc.free(cursor);
+        Misc.free(base);
     }
 
     private static class LatestByRecordCursor implements NoRandomAccessRecordCursor {
@@ -135,7 +156,7 @@ public class LatestByRecordCursorFactory extends AbstractRecordCursorFactory {
         public void close() {
             if (isOpen) {
                 isOpen = false;
-                Misc.free(baseCursor);
+                baseCursor = Misc.free(baseCursor);
                 if (rowIndexes != null) {
                     rowIndexes.clear();
                     if (rowIndexes.getCapacity() > rowIndexesCapacityThreshold) {
@@ -192,19 +213,18 @@ public class LatestByRecordCursorFactory extends AbstractRecordCursorFactory {
                 long rowIndexesCapacityThreshold,
                 SqlExecutionCircuitBreaker circuitBreaker
         ) {
+            this.baseCursor = baseCursor;
+            baseRecord = baseCursor.getRecord();
             if (!isOpen) {
                 isOpen = true;
                 latestByMap.reopen();
             }
-
-            this.baseCursor = baseCursor;
-            baseRecord = baseCursor.getRecord();
             this.recordSink = recordSink;
             this.rowIndexes = rowIndexes;
             this.circuitBreaker = circuitBreaker;
-            index = 0;
-            rowIndexesPos = 0;
             this.rowIndexesCapacityThreshold = rowIndexesCapacityThreshold;
+            rowIndexesPos = 0;
+            index = 0;
             isMapBuilt = false;
         }
 

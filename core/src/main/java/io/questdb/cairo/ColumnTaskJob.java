@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ public class ColumnTaskJob extends AbstractQueueConsumerJob<ColumnTask> {
     public static void processColumnTask(ColumnTask task, long cursor, @NotNull Sequence subSeq) {
         final int columnIndex = task.getColumnIndex();
         final int columnType = task.getColumnType();
-        final int timestampColumnIndex = task.getTimestampColumnIndex();
+        final long timestampColumnIndex = task.getTimestampColumnIndex();
         final long lon0 = task.getLong0();
         final long long1 = task.getLong1();
         final long long2 = task.getLong2();

@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -88,6 +88,8 @@ public class WindowRecordCursorFactory extends AbstractRecordCursorFactory {
 
     @Override
     public RecordCursor getCursor(SqlExecutionContext executionContext) throws SqlException {
+        // Forcefully disable column pre-touch for nested filter queries.
+        executionContext.setColumnPreTouchEnabled(false);
         final RecordCursor baseCursor = base.getCursor(executionContext);
         cursor.of(baseCursor, executionContext);
         return cursor;
@@ -193,10 +195,15 @@ public class WindowRecordCursorFactory extends AbstractRecordCursorFactory {
             super.of(baseCursor);
             circuitBreaker = executionContext.getCircuitBreaker();
             if (!isOpen) {
-                reopen(functions);
                 isOpen = true;
+                try {
+                    reopen(functions);
+                } catch (Throwable t) {
+                    close();
+                    throw t;
+                }
             }
-            Function.init(functions, baseCursor, executionContext);
+            Function.init(functions, baseCursor, executionContext, null);
         }
 
         private void reopen(ObjList<Function> list) {

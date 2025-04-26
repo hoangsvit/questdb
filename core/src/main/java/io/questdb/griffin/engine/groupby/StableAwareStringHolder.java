@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -26,8 +26,7 @@ package io.questdb.griffin.engine.groupby;
 
 import io.questdb.std.Unsafe;
 import io.questdb.std.str.AbstractCharSequence;
-import io.questdb.std.str.DirectCharSequence;
-import io.questdb.std.str.StableDirectSequence;
+import io.questdb.std.str.DirectString;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -40,11 +39,11 @@ import org.jetbrains.annotations.Nullable;
  * sequence itself.
  * <br>
  * The information about whether a stored sequence is direct or not is not stored in the header of the Holder. Instead, the
- * top bit of the pointer returned by {@link #ptr()} is used to store this information. This is done to save space in the
- * header and to avoid the need to store this information separately. Thus, the value returned by {@link #ptr()} cannot
+ * top bit of the pointer returned by {@link #colouredPtr()} is used to store this information. This is done to save space in the
+ * header and to avoid the need to store this information separately. Thus, the value returned by {@link #colouredPtr()} cannot
  * be used as a pointer directly and should be treated as an opaque value.
  * <p>
- * Uses provided {@link GroupByAllocatorImpl} to allocate the underlying buffer. Grows the buffer when needed.
+ * Uses provided {@link GroupByAllocator} to allocate the underlying buffer. Grows the buffer when needed.
  * <p>
  * Buffer layout is the following:
  * <pre>
@@ -59,15 +58,8 @@ public class StableAwareStringHolder implements CharSequence {
     private static final long LEN_OFFSET = Integer.BYTES;
     private static final int MIN_CAPACITY = 4; // 4 chars = 8 bytes = enough to store a pointer
     private GroupByAllocator allocator;
-    private long ptr;
     private boolean direct;
-
-    /**
-     * Returns capacity in chars.
-     */
-    public int capacity() {
-        return ptr != 0 ? Unsafe.getUnsafe().getInt(ptr) : 0;
-    }
+    private long ptr;
 
     @Override
     public char charAt(int index) {
@@ -76,18 +68,39 @@ public class StableAwareStringHolder implements CharSequence {
             // and we assume of() is called more frequently than charAt()
             long directPtr = Unsafe.getUnsafe().getLong(ptr + HEADER_SIZE);
             assert directPtr != 0;
-            assert index < length();
             return Unsafe.getUnsafe().getChar(directPtr + 2L * index);
         } else {
             return Unsafe.getUnsafe().getChar(ptr + HEADER_SIZE + 2L * index);
         }
     }
 
-    private void clear() {
-        if (ptr != 0) {
-            Unsafe.getUnsafe().putInt(ptr + LEN_OFFSET, 0);
-            direct = false;
+    public void clearAndSet(@Nullable CharSequence cs) {
+        clear();
+        if (cs == null) {
+            return;
         }
+        if (cs instanceof DirectString) {
+            DirectString ds = (DirectString) cs;
+            if (ds.isStable()) {
+                direct = true;
+                checkCapacity(4); // pointer is 8 bytes = 4 chars
+                Unsafe.getUnsafe().putLong(ptr + HEADER_SIZE, ds.ptr());
+                Unsafe.getUnsafe().putInt(ptr + LEN_OFFSET, cs.length());
+                return;
+            }
+        }
+
+        int thatLen = cs.length();
+        checkCapacity(thatLen);
+        long lo = ptr + HEADER_SIZE;
+        for (int i = 0; i < thatLen; i++) {
+            Unsafe.getUnsafe().putChar(lo + 2L * i, cs.charAt(i));
+        }
+        Unsafe.getUnsafe().putInt(ptr + LEN_OFFSET, thatLen);
+    }
+
+    public long colouredPtr() {
+        return ptr | (direct ? 0x8000000000000000L : 0);
     }
 
     @Override
@@ -95,35 +108,12 @@ public class StableAwareStringHolder implements CharSequence {
         return ptr != 0 ? Unsafe.getUnsafe().getInt(ptr + LEN_OFFSET) : 0;
     }
 
-    public StableAwareStringHolder of(long ptr) {
+    public StableAwareStringHolder of(long colouredPtr) {
         // clear the top bit
-        this.ptr = ptr & 0x7FFFFFFFFFFFFFFFL;
+        this.ptr = colouredPtr & 0x7FFFFFFFFFFFFFFFL;
         // extract the top bit
-        this.direct = (ptr & 0x8000000000000000L) != 0;
+        this.direct = (colouredPtr & 0x8000000000000000L) != 0;
         return this;
-    }
-
-    public long ptr() {
-        return ptr | (direct ? 0x8000000000000000L : 0);
-    }
-
-    public void clearAndSet(@Nullable CharSequence cs) {
-        clear();
-        if (cs instanceof StableDirectSequence) {
-            direct = true;
-            DirectCharSequence dcs = (DirectCharSequence) cs;
-            checkCapacity(4); // pointer is 8 bytes = 4 chars
-            Unsafe.getUnsafe().putLong(ptr + HEADER_SIZE, dcs.ptr());
-            Unsafe.getUnsafe().putInt(ptr + LEN_OFFSET, dcs.length());
-        } else if (cs != null) {
-            int thatLen = cs.length();
-            checkCapacity(thatLen);
-            long lo = ptr + HEADER_SIZE;
-            for (int i = 0; i < thatLen; i++) {
-                Unsafe.getUnsafe().putChar(lo + 2L * i, cs.charAt(i));
-            }
-            Unsafe.getUnsafe().putInt(ptr + LEN_OFFSET, thatLen);
-        }
     }
 
     public void setAllocator(GroupByAllocator allocator) {
@@ -139,6 +129,10 @@ public class StableAwareStringHolder implements CharSequence {
     @Override
     public String toString() {
         return AbstractCharSequence.getString(this);
+    }
+
+    private int capacity() {
+        return ptr != 0 ? Unsafe.getUnsafe().getInt(ptr) : 0;
     }
 
     private void checkCapacity(int nChars) {
@@ -163,5 +157,12 @@ public class StableAwareStringHolder implements CharSequence {
         assert ptr != 0;
         // the highest bit is not set
         assert (ptr & 0x8000000000000000L) == 0;
+    }
+
+    private void clear() {
+        if (ptr != 0) {
+            Unsafe.getUnsafe().putInt(ptr + LEN_OFFSET, 0);
+            direct = false;
+        }
     }
 }

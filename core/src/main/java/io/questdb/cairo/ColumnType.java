@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -24,15 +24,30 @@
 
 package io.questdb.cairo;
 
-import io.questdb.std.*;
+import io.questdb.std.Chars;
+import io.questdb.std.IntHashSet;
+import io.questdb.std.IntObjHashMap;
+import io.questdb.std.Long256;
+import io.questdb.std.LowerCaseAsciiCharSequenceIntHashMap;
+import io.questdb.std.Numbers;
 import io.questdb.std.str.StringSink;
 
 // ColumnType layout - 32bit
 //
-// | PGWire format | Extra type information | Type discriminant (tag) |
+// | Handling bit  | Extra type information | Type discriminant (tag) |
 // +---------------+------------------------+-------------------------+
 // |    1 bit      |        23 bits         |         8 bits          |
 // +---------------+------------------------+-------------------------+
+//
+// Handling bit:
+//   Skip column use case:
+//       The top bit is set for columns that should be skipped.
+//       I.e. `if (columnType < 0) { skip }`.
+//   PG Wire Format use case:
+//       Reserved for bit-shifting operations as part of `PGOids` to
+//       determine if a PG Wire column should be handled as text or binary.
+//       Also see `bindSelectColumnFormats` and `bindVariableTypes` in
+//       `PGConnectionContext`.
 
 /**
  * Column types as numeric (integer) values
@@ -92,7 +107,8 @@ public final class ColumnType {
     public static final short REGPROCEDURE = REGCLASS + 1;      // = 28;
     public static final short ARRAY_STRING = REGPROCEDURE + 1;  // = 29;
     public static final short PARAMETER = ARRAY_STRING + 1;     // = 30;
-    public static final short NULL = PARAMETER + 1;             // = 31; ALWAYS the last
+    public static final short INTERVAL = PARAMETER + 1;         // = 31
+    public static final short NULL = INTERVAL + 1;              // = 32; ALWAYS the last
     private static final short[] TYPE_SIZE = new short[NULL + 1];
     private static final short[] TYPE_SIZE_POW2 = new short[TYPE_SIZE.length];
     // slightly bigger than needed to make it a power of 2
@@ -108,6 +124,7 @@ public final class ColumnType {
     private static final int TYPE_FLAG_DESIGNATED_TIMESTAMP = (1 << 17);
     private static final int TYPE_FLAG_GEO_HASH = (1 << 16);
     private static final LowerCaseAsciiCharSequenceIntHashMap nameTypeMap = new LowerCaseAsciiCharSequenceIntHashMap();
+    private static final IntHashSet nonPersistedTypes = new IntHashSet();
     private static final IntObjHashMap<String> typeNameMap = new IntObjHashMap<>();
 
     private ColumnType() {
@@ -126,7 +143,7 @@ public final class ColumnType {
             case VARCHAR:
                 return VarcharTypeDriver.INSTANCE;
             default:
-                throw CairoException.critical(0).put("there is no driver to type: ").put(columnType);
+                throw CairoException.critical(0).put("no driver for type: ").put(columnType);
         }
     }
 
@@ -167,11 +184,19 @@ public final class ColumnType {
         // This is usually case for widening conversions.
         return (fromType >= BYTE && toType >= BYTE && toType <= DOUBLE && fromType < toType) || fromType == NULL
                 // char can be short and short can be char for symmetry
-                || (fromType == CHAR && toType == SHORT) || (fromType == TIMESTAMP && toType == LONG);
+                || (fromType == CHAR && toType == SHORT)
+                // Same with bytes and bools
+                || (fromType == BYTE && toType == BOOLEAN)
+                || (fromType == TIMESTAMP && toType == LONG)
+                || (fromType == STRING && (toType >= BYTE && toType <= DOUBLE));
     }
 
     public static boolean isChar(int columnType) {
         return columnType == CHAR;
+    }
+
+    public static boolean isComparable(int columnType) {
+        return columnType != BINARY && columnType != INTERVAL;
     }
 
     public static boolean isCursor(int columnType) {
@@ -221,8 +246,16 @@ public final class ColumnType {
         return columnType == ColumnType.INT;
     }
 
+    public static boolean isInterval(int columnType) {
+        return columnType == INTERVAL;
+    }
+
     public static boolean isNull(int columnType) {
         return columnType == NULL;
+    }
+
+    public static boolean isPersisted(int columnType) {
+        return nonPersistedTypes.excludes(columnType);
     }
 
     public static boolean isString(int columnType) {
@@ -261,6 +294,10 @@ public final class ColumnType {
 
     public static boolean isVarchar(int columnType) {
         return columnType == VARCHAR;
+    }
+
+    public static boolean isVarcharOrString(int columnType) {
+        return columnType == VARCHAR || columnType == STRING;
     }
 
     public static void makeUtf16DefaultString() {
@@ -339,14 +376,6 @@ public final class ColumnType {
         return nameTypeMap.get(name);
     }
 
-    public static int variableColumnLengthBytes(int columnType) {
-        if (columnType == ColumnType.STRING) {
-            return Integer.BYTES;
-        }
-        assert columnType == ColumnType.BINARY;
-        return Long.BYTES;
-    }
-
     private static boolean isGeoHashWideningCast(int fromType, int toType) {
         final int toTag = tagOf(toType);
         final int fromTag = tagOf(fromType);
@@ -354,7 +383,7 @@ public final class ColumnType {
     }
 
     private static boolean isIPv4Cast(int fromType, int toType) {
-        return (fromType == STRING && toType == IPv4);
+        return (fromType == STRING || fromType == VARCHAR) && toType == IPv4;
     }
 
     private static boolean isImplicitParsingCast(int fromType, int toType) {
@@ -415,40 +444,63 @@ public final class ColumnType {
 
     static {
         assert MIGRATION_VERSION >= VERSION;
-        // For function overload the priority is taken from left to right
+        // Overload priority is used (indirectly) to route argument type to correct function signature.
+        // The argument type keys the array (see comments in the array initialized). This type has to match
+        // the numeric value of the type text. Values are then picked in left-to-right order. Signature types
+        // on the left are used only if none of signature types on the right exist.
+        //
+        // All types must be mentioned at all times.
+        //
+        /// Note that the overload rule here must align with the corresponding function implementation, or specific
+        /// rules specified by {@link io.questdb.griffin.FunctionParser}, which add explicit cast function(like uuid -> string).
+        /// For instance, in {@link io.questdb.griffin.engine.functions.SymbolFunction},
+        /// apart from getChar(), getStr(), getTimestamp(), getVarchar(), and getInt(),
+        /// all other getxxx methods throw an UnSupportException. Therefore, the Symbol datatype only supports
+        /// overloading by STRING, VARCHAR, CHAR, INT, and TIMESTAMP.
+
         OVERLOAD_PRIORITY = new short[][]{
                 /* 0 UNDEFINED  */  {DOUBLE, FLOAT, STRING, VARCHAR, LONG, TIMESTAMP, DATE, INT, CHAR, SHORT, BYTE, BOOLEAN}
                 /* 1  BOOLEAN   */, {BOOLEAN}
                 /* 2  BYTE      */, {BYTE, SHORT, INT, LONG, FLOAT, DOUBLE}
-                /* 3  SHORT     */, {SHORT, INT, LONG, FLOAT, DOUBLE}
-                /* 4  CHAR      */, {CHAR, STRING, VARCHAR}
+                /* 3  SHORT     */, {SHORT, INT, LONG, FLOAT, DOUBLE, CHAR}
+                /* 4  CHAR      */, {CHAR, STRING, VARCHAR, SHORT, INT, LONG, FLOAT, DOUBLE}
                 /* 5  INT       */, {INT, LONG, FLOAT, DOUBLE, TIMESTAMP, DATE}
                 /* 6  LONG      */, {LONG, DOUBLE, TIMESTAMP, DATE}
-                /* 7  DATE      */, {DATE, TIMESTAMP, LONG}
-                /* 8  TIMESTAMP */, {TIMESTAMP, LONG, DATE}
+                /* 7  DATE      */, {DATE, TIMESTAMP, LONG, DOUBLE}
+                /* 8  TIMESTAMP */, {TIMESTAMP, LONG, DATE, DOUBLE}
                 /* 9  FLOAT     */, {FLOAT, DOUBLE}
                 /* 10 DOUBLE    */, {DOUBLE}
-                /* 11 STRING    */, {STRING, VARCHAR, CHAR, DOUBLE, LONG, INT, FLOAT, SHORT, BYTE}
-                /* 12 SYMBOL    */, {SYMBOL, STRING, VARCHAR}
-                /* 13 LONG256   */, {LONG256}
+                /* 11 STRING    */, {STRING, VARCHAR, CHAR, DOUBLE, LONG, INT, FLOAT, SHORT, BYTE, TIMESTAMP, DATE, SYMBOL, IPv4}
+                /* 12 SYMBOL    */, {SYMBOL, STRING, VARCHAR, CHAR, INT, TIMESTAMP}
+                /* 13 LONG256   */, {LONG256, LONG}
                 /* 14 GEOBYTE   */, {GEOBYTE, GEOSHORT, GEOINT, GEOLONG, GEOHASH}
                 /* 15 GEOSHORT  */, {GEOSHORT, GEOINT, GEOLONG, GEOHASH}
                 /* 16 GEOINT    */, {GEOINT, GEOLONG, GEOHASH}
                 /* 17 GEOLONG   */, {GEOLONG, GEOHASH}
                 /* 18 BINARY    */, {BINARY}
-                /* 19 UUID      */, {UUID, STRING, VARCHAR}
-                /* 20 VARCHAR   */, {VARCHAR, STRING, CHAR, DOUBLE, LONG, INT, FLOAT, SHORT, BYTE}
+                /* 19 UUID      */, {UUID, STRING}
+                /* 20 CURSOR    */, {CURSOR}
+                /* 21 unused    */, {}
+                /* 22 unused    */, {}
+                /* 23 unused    */, {}
+                /* 24 LONG128   */, {LONG128}
+                /* 25 IPv4      */, {IPv4, STRING, VARCHAR}
+                /* 26 VARCHAR   */, {VARCHAR, STRING, CHAR, DOUBLE, LONG, INT, FLOAT, SHORT, BYTE, TIMESTAMP, DATE, SYMBOL, IPv4}
+                /* 27 unused    */, {}
+                /* 28 unused    */, {}
+                /* 29 unused    */, {}
+                /* 30 unused    */, {}
+                /* 31 INTERVAL  */, {INTERVAL, STRING}
+                /* 32 NULL      */, {VARCHAR, STRING, DOUBLE, FLOAT, LONG, INT}
         };
         for (short fromTag = UNDEFINED; fromTag < NULL; fromTag++) {
             for (short toTag = BOOLEAN; toTag <= NULL; toTag++) {
                 short value = OVERLOAD_NONE;
-                if (fromTag < OVERLOAD_PRIORITY.length) {
-                    short[] priority = OVERLOAD_PRIORITY[fromTag];
-                    for (short i = 0; i < priority.length; i++) {
-                        if (priority[i] == toTag) {
-                            value = i;
-                            break;
-                        }
+                short[] priority = OVERLOAD_PRIORITY[fromTag];
+                for (short i = 0; i < priority.length; i++) {
+                    if (priority[i] == toTag) {
+                        value = i;
+                        break;
                     }
                 }
                 OVERLOAD_PRIORITY_MATRIX[OVERLOAD_PRIORITY_N * fromTag + toTag] = value;
@@ -490,12 +542,15 @@ public final class ColumnType {
         typeNameMap.put(REGPROCEDURE, "regprocedure");
         typeNameMap.put(ARRAY_STRING, "text[]");
         typeNameMap.put(IPv4, "IPv4");
+        typeNameMap.put(INTERVAL, "INTERVAL");
+        typeNameMap.put(NULL, "NULL");
 
         nameTypeMap.put("boolean", BOOLEAN);
         nameTypeMap.put("byte", BYTE);
         nameTypeMap.put("double", DOUBLE);
         nameTypeMap.put("float", FLOAT);
         nameTypeMap.put("int", INT);
+        nameTypeMap.put("integer", INT);
         nameTypeMap.put("long", LONG);
         nameTypeMap.put("short", SHORT);
         nameTypeMap.put("char", CHAR);
@@ -520,6 +575,7 @@ public final class ColumnType {
         nameTypeMap.put("regprocedure", REGPROCEDURE);
         nameTypeMap.put("text[]", ARRAY_STRING);
         nameTypeMap.put("IPv4", IPv4);
+        nameTypeMap.put("interval", INTERVAL);
 
         StringSink sink = new StringSink();
         for (int b = 1; b <= GEOLONG_MAX_BITS; b++) {
@@ -563,6 +619,7 @@ public final class ColumnType {
         TYPE_SIZE_POW2[NULL] = -1;
         TYPE_SIZE_POW2[LONG128] = 4;
         TYPE_SIZE_POW2[UUID] = 4;
+        TYPE_SIZE_POW2[INTERVAL] = 4;
 
         TYPE_SIZE[UNDEFINED] = -1;
         TYPE_SIZE[BOOLEAN] = Byte.BYTES;
@@ -592,5 +649,17 @@ public final class ColumnType {
         TYPE_SIZE[UUID] = 2 * Long.BYTES;
         TYPE_SIZE[NULL] = 0;
         TYPE_SIZE[LONG128] = 2 * Long.BYTES;
+        TYPE_SIZE[INTERVAL] = 2 * Long.BYTES;
+
+        nonPersistedTypes.add(UNDEFINED);
+        nonPersistedTypes.add(INTERVAL);
+        nonPersistedTypes.add(PARAMETER);
+        nonPersistedTypes.add(CURSOR);
+        nonPersistedTypes.add(VAR_ARG);
+        nonPersistedTypes.add(RECORD);
+        nonPersistedTypes.add(NULL);
+        nonPersistedTypes.add(REGCLASS);
+        nonPersistedTypes.add(REGPROCEDURE);
+        nonPersistedTypes.add(ARRAY_STRING);
     }
 }

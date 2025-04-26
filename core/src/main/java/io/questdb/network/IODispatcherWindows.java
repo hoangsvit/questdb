@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@
 package io.questdb.network;
 
 import io.questdb.std.LongIntHashMap;
+import io.questdb.std.Misc;
 
 public class IODispatcherWindows<C extends IOContext<C>> extends AbstractIODispatcher<C> {
     private final LongIntHashMap fds = new LongIntHashMap();
@@ -52,8 +53,8 @@ public class IODispatcherWindows<C extends IOContext<C>> extends AbstractIODispa
     @Override
     public void close() {
         super.close();
-        readFdSet.close();
-        writeFdSet.close();
+        Misc.free(readFdSet);
+        Misc.free(writeFdSet);
         LOG.info().$("closed").$();
     }
 
@@ -71,7 +72,7 @@ public class IODispatcherWindows<C extends IOContext<C>> extends AbstractIODispa
             final long srcOpId = context.getAndResetHeartbeatId();
 
             final long opId = nextOpId();
-            final int fd = context.getFd();
+            final long fd = context.getFd();
 
             interestSubSeq.done(cursor);
             if (operation == IOOperation.HEARTBEAT) {
@@ -201,7 +202,7 @@ public class IODispatcherWindows<C extends IOContext<C>> extends AbstractIODispa
                 }
             }
 
-            final int fd = (int) pending.get(i, OPM_FD);
+            final long fd = pending.get(i, OPM_FD);
             final int newOp = fds.get(fd);
             assert fd != serverFd;
 

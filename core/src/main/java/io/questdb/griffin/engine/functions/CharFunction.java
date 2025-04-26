@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -25,13 +25,17 @@
 package io.questdb.griffin.engine.functions;
 
 import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.ImplicitCastException;
 import io.questdb.cairo.TableUtils;
 import io.questdb.cairo.sql.Record;
 import io.questdb.cairo.sql.RecordCursorFactory;
 import io.questdb.cairo.sql.ScalarFunction;
 import io.questdb.std.BinarySequence;
 import io.questdb.std.Long256;
-import io.questdb.std.str.*;
+import io.questdb.std.str.CharSink;
+import io.questdb.std.str.StringSink;
+import io.questdb.std.str.Utf8Sequence;
+import io.questdb.std.str.Utf8StringSink;
 
 public abstract class CharFunction implements ScalarFunction {
     private final StringSink utf16SinkA = new StringSink();
@@ -57,7 +61,7 @@ public abstract class CharFunction implements ScalarFunction {
 
     @Override
     public final byte getByte(Record rec) {
-        throw new UnsupportedOperationException();
+        return castCharToNumber(rec, ColumnType.BYTE);
     }
 
     @Override
@@ -67,12 +71,12 @@ public abstract class CharFunction implements ScalarFunction {
 
     @Override
     public double getDouble(Record rec) {
-        return getChar(rec);
+        return castCharToNumber(rec, ColumnType.DOUBLE);
     }
 
     @Override
     public float getFloat(Record rec) {
-        return getChar(rec);
+        return castCharToNumber(rec, ColumnType.FLOAT);
     }
 
     @Override
@@ -102,12 +106,12 @@ public abstract class CharFunction implements ScalarFunction {
 
     @Override
     public int getInt(Record rec) {
-        return getChar(rec);
+        return castCharToNumber(rec, ColumnType.INT);
     }
 
     @Override
     public long getLong(Record rec) {
-        return getChar(rec);
+        return castCharToNumber(rec, ColumnType.LONG);
     }
 
     @Override
@@ -142,7 +146,7 @@ public abstract class CharFunction implements ScalarFunction {
 
     @Override
     public short getShort(Record rec) {
-        return (short) getChar(rec);
+        return castCharToNumber(rec, ColumnType.SHORT);
     }
 
     @Override
@@ -154,14 +158,6 @@ public abstract class CharFunction implements ScalarFunction {
         utf16SinkA.clear();
         utf16SinkA.put(value);
         return utf16SinkA;
-    }
-
-    @Override
-    public final void getStr(Record rec, Utf16Sink utf16Sink) {
-        final char value = getChar(rec);
-        if (value != 0) {
-            utf16Sink.put(value);
-        }
     }
 
     @Override
@@ -205,32 +201,44 @@ public abstract class CharFunction implements ScalarFunction {
     }
 
     @Override
-    public void getVarchar(Record rec, Utf8Sink utf8Sink) {
-        final char value = getChar(rec);
-        if (value != 0) {
-            utf8Sink.put(value);
-        }
-    }
-
-    @Override
     public Utf8Sequence getVarcharA(Record rec) {
         final char value = getChar(rec);
-        if (value == 0) {
-            return null;
+        if (value != 0) {
+            utf8SinkA.clear();
+            utf8SinkA.put(getChar(rec));
+            return utf8SinkA;
         }
-        utf8SinkA.clear();
-        utf8SinkA.put(getChar(rec));
-        return utf8SinkA;
+        return null;
     }
 
     @Override
     public Utf8Sequence getVarcharB(Record rec) {
         final char value = getChar(rec);
-        if (value == 0) {
-            return null;
+        if (value != 0) {
+            utf8SinkB.clear();
+            utf8SinkB.put(getChar(rec));
+            return utf8SinkB;
         }
-        utf8SinkB.clear();
-        utf8SinkB.put(getChar(rec));
-        return utf8SinkB;
+        return null;
+    }
+
+    @Override
+    public final int getVarcharSize(Record rec) {
+        final char value = getChar(rec);
+        if (value == 0) {
+            return TableUtils.NULL_LEN;
+        }
+        utf8SinkA.clear();
+        utf8SinkA.put(getChar(rec));
+        return utf8SinkA.size();
+    }
+
+    private byte castCharToNumber(Record rec, int toType) {
+        char c = getChar(rec);
+        final byte v = (byte) (c - '0');
+        if (v > -1 && v < 10) {
+            return v;
+        }
+        throw ImplicitCastException.inconvertibleValue(c, ColumnType.CHAR, toType);
     }
 }

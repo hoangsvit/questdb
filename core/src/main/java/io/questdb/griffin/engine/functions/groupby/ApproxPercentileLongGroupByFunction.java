@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -46,6 +46,7 @@ public class ApproxPercentileLongGroupByFunction extends DoubleFunction implemen
     private final Function percentileFunc;
     private final int precision;
     private int histogramIndex;
+    private double percentile;
     private int valueIndex;
 
     public ApproxPercentileLongGroupByFunction(Function exprFunc, Function percentileFunc, int precision, int funcPosition) {
@@ -76,7 +77,7 @@ public class ApproxPercentileLongGroupByFunction extends DoubleFunction implemen
         }
 
         final long val = exprFunc.getLong(record);
-        if (val != Numbers.LONG_NaN) {
+        if (val != Numbers.LONG_NULL) {
             histogram.recordValue(val);
         }
         mapValue.putLong(valueIndex, histogramIndex++);
@@ -86,7 +87,7 @@ public class ApproxPercentileLongGroupByFunction extends DoubleFunction implemen
     public void computeNext(MapValue mapValue, Record record, long rowId) {
         final Histogram histogram = histograms.getQuick(mapValue.getInt(valueIndex));
         final long val = exprFunc.getLong(record);
-        if (val != Numbers.LONG_NaN) {
+        if (val != Numbers.LONG_NULL) {
             histogram.recordValue(val);
         }
     }
@@ -101,7 +102,7 @@ public class ApproxPercentileLongGroupByFunction extends DoubleFunction implemen
         if (histogram.getTotalCount() == 0) {
             return Double.NaN;
         }
-        return histogram.getValueAtPercentile(percentileFunc.getDouble(null) * 100);
+        return histogram.getValueAtPercentile(percentile * 100);
     }
 
     @Override
@@ -128,8 +129,8 @@ public class ApproxPercentileLongGroupByFunction extends DoubleFunction implemen
     public void init(SymbolTableSource symbolTableSource, SqlExecutionContext executionContext) throws SqlException {
         BinaryFunction.super.init(symbolTableSource, executionContext);
 
-        final double percentile = percentileFunc.getDouble(null);
-        if (Double.isNaN(percentile) || percentile < 0 || percentile > 1) {
+        percentile = percentileFunc.getDouble(null);
+        if (Numbers.isNull(percentile) || percentile < 0 || percentile > 1) {
             throw SqlException.$(funcPosition, "percentile must be between 0.0 and 1.0");
         }
     }
@@ -151,7 +152,7 @@ public class ApproxPercentileLongGroupByFunction extends DoubleFunction implemen
     }
 
     @Override
-    public boolean isReadThreadSafe() {
+    public boolean isThreadSafe() {
         return false;
     }
 
@@ -162,7 +163,7 @@ public class ApproxPercentileLongGroupByFunction extends DoubleFunction implemen
 
     @Override
     public void setNull(MapValue mapValue) {
-        mapValue.putLong(valueIndex, Numbers.LONG_NaN);
+        mapValue.putLong(valueIndex, Numbers.LONG_NULL);
     }
 
     @Override

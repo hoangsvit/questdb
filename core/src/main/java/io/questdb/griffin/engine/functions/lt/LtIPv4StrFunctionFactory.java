@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -71,6 +71,11 @@ public class LtIPv4StrFunctionFactory implements FunctionFactory {
         throw SqlException.$(strFuncPosition, "STRING constant expected");
     }
 
+    @Override
+    public boolean supportImplicitCastCharToStr() {
+        return false;
+    }
+
     private static class ConstStrFunc extends NegatableBooleanFunction implements UnaryFunction {
         private final Function arg;
         private final int constIPv4;
@@ -87,13 +92,7 @@ public class LtIPv4StrFunctionFactory implements FunctionFactory {
 
         @Override
         public boolean getBool(Record rec) {
-            if (constIPv4 != Numbers.IPv4_NULL) {
-                int ipv4 = arg.getIPv4(rec);
-                if (ipv4 != Numbers.IPv4_NULL) {
-                    return negated == (Numbers.ipv4ToLong(ipv4) >= Numbers.ipv4ToLong(constIPv4));
-                }
-            }
-            return false;
+            return Numbers.lessThanIPv4(arg.getIPv4(rec), constIPv4, negated);
         }
 
         @Override
@@ -120,13 +119,7 @@ public class LtIPv4StrFunctionFactory implements FunctionFactory {
 
         @Override
         public boolean getBool(Record rec) {
-            if (constIPv4 != Numbers.IPv4_NULL) {
-                int ipv4 = ipv4Func.getIPv4(rec);
-                if (ipv4 != Numbers.IPv4_NULL) {
-                    return negated == (Numbers.ipv4ToLong(ipv4) >= Numbers.ipv4ToLong(constIPv4));
-                }
-            }
-            return false;
+            return Numbers.lessThanIPv4(ipv4Func.getIPv4(rec), constIPv4, negated);
         }
 
         @Override

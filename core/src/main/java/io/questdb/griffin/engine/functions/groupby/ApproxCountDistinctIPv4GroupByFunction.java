@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -119,6 +119,11 @@ public class ApproxCountDistinctIPv4GroupByFunction extends LongFunction impleme
     }
 
     @Override
+    public int getSampleByFlags() {
+        return GroupByFunction.SAMPLE_BY_FILL_ALL;
+    }
+
+    @Override
     public int getValueIndex() {
         return valueIndex;
     }
@@ -144,7 +149,7 @@ public class ApproxCountDistinctIPv4GroupByFunction extends LongFunction impleme
     }
 
     @Override
-    public boolean isReadThreadSafe() {
+    public boolean isThreadSafe() {
         return false;
     }
 
@@ -152,7 +157,7 @@ public class ApproxCountDistinctIPv4GroupByFunction extends LongFunction impleme
     public void merge(MapValue destValue, MapValue srcValue) {
         if (srcValue.getBool(overwrittenFlagIndex)) {
             long srcCount = srcValue.getLong(valueIndex);
-            if (srcCount == 0 || srcCount == Numbers.LONG_NaN) {
+            if (srcCount == 0 || srcCount == Numbers.LONG_NULL) {
                 return;
             }
             // If reached here, it would mean that the value has been overwritten by interpolation
@@ -169,7 +174,7 @@ public class ApproxCountDistinctIPv4GroupByFunction extends LongFunction impleme
 
         if (destValue.getBool(overwrittenFlagIndex)) {
             long dstCount = destValue.getLong(valueIndex);
-            if (dstCount == 0 || dstCount == Numbers.LONG_NaN) {
+            if (dstCount == 0 || dstCount == Numbers.LONG_NULL) {
                 destValue.putBool(overwrittenFlagIndex, false);
                 destValue.putLong(hllPtrIndex, srcPtr);
                 destValue.putLong(valueIndex, NULL_VALUE);
@@ -214,7 +219,7 @@ public class ApproxCountDistinctIPv4GroupByFunction extends LongFunction impleme
 
     @Override
     public void setNull(MapValue mapValue) {
-        overwrite(mapValue, Numbers.LONG_NaN);
+        overwrite(mapValue, Numbers.LONG_NULL);
     }
 
     @Override

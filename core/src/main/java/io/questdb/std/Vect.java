@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -24,9 +24,24 @@
 
 package io.questdb.std;
 
-import io.questdb.cairo.BinarySearch;
-
 public final class Vect {
+    // Down is increasing scan direction
+    public static final int BIN_SEARCH_SCAN_DOWN = 1;
+    // Up is decreasing scan direction
+    public static final int BIN_SEARCH_SCAN_UP = -1;
+    // Index format:
+    // Per every timestamp there is a record:
+    // 8 bytes is used for timestamp
+    // 8 bytes to store segment and row id in the segment
+    // (1-8) bytes of reverse index, e.g. what is the index of the row with current index in the sorted result set
+    public static final byte DEDUP_INDEX_FORMAT = 1;
+    // Index format is 2 parts
+    // Part 1: per every timestamp there is a record:
+    // 8 bytes is used for timestamp
+    // 8 bytes to store segment and row id in the segment
+    // Part 2:
+    // (1-8) bytes of reverse index, e.g. what is the index of the row with current index in the sorted result set
+    public static final byte SHUFFLE_INDEX_FORMAT = 2;
 
     public static native double avgDoubleAcc(long pInt, long count, long pCount);
 
@@ -46,7 +61,7 @@ public final class Vect {
         // Note: high is inclusive!
         long index = binarySearch64Bit(pData, value, low, high, scanDirection);
         if (index < 0) {
-            return (-index - 1) - (scanDirection == BinarySearch.SCAN_UP ? 0 : 1);
+            return (-index - 1) - (scanDirection == BIN_SEARCH_SCAN_UP ? 0 : 1);
         }
         return index;
     }
@@ -72,7 +87,9 @@ public final class Vect {
 
     public static native long countLong(long pLong, long count);
 
-    public static native long dedupMergeVarColumnLen(long mergeIndexAddr, long mergeIndexSize, long srcDataFixAddr, long srcOooFixAddr);
+    public static native long dedupMergeStrBinColumnSize(long mergeIndexAddr, long mergeIndexCount, long srcDataFixAddr, long srcOooFixAddr);
+
+    public static native long dedupMergeVarcharColumnSize(long mergeIndexAddr, long mergeIndexCount, long srcDataFixAddr, long srcOooFixAddr);
 
     public static native long dedupSortedTimestampIndex(
             long inIndexAddr,
@@ -102,6 +119,14 @@ public final class Vect {
         assert dedupCount != -1 : "unsorted data passed to deduplication";
         return dedupCount;
     }
+
+    public static native long dedupSortedTimestampIndexManyAddresses(
+            long indexFormat,
+            long inIndexAddr,
+            long outIndexAddr,
+            int dedupColumnCount,
+            long dedupColumnData
+    );
 
     public static native void flattenIndex(long pIndex, long count);
 
@@ -139,6 +164,17 @@ public final class Vect {
     public static native void indexReshuffle64Bit(long pSrc, long pDest, long pIndex, long count);
 
     public static native void indexReshuffle8Bit(long pSrc, long pDest, long pIndex, long count);
+
+    /**
+     * Check if index return code is valid and indicates successful index creation.
+     *
+     * @param indexFormat index format returned by index sort function
+     * @return true if index is valid and successful
+     */
+    public static boolean isIndexSuccess(long indexFormat) {
+        long f = indexFormat >>> 56;
+        return f > 0 && f < 4;
+    }
 
     public static native double maxDouble(long pDouble, long count);
 
@@ -215,6 +251,22 @@ public final class Vect {
 
     public static native void mergeShuffle8Bit(long pSrc1, long pSrc2, long pDest, long pIndex, long count);
 
+    public static native long mergeShuffleFixedColumnFromManyAddresses(
+            int columnSizeBytes,
+            long indexFormat,
+            long srcAddresses,
+            long dstAddress,
+            long mergeIndexAddr,
+            long segmentAddressAddr,
+            long segmentCount
+    );
+
+    public static native long mergeShuffleStringColumnFromManyAddresses(long indexFormat, int dataLengthBytes, long primaryAddressList, long secondaryAddressList, long outPrimaryAddress, long outSecondaryAddress, long mergeIndexAddr, long destVarOffset, long destDataSize);
+
+    public static native long mergeShuffleSymbolColumnFromManyAddresses(long indexFormat, long srcAddresses, long dstAddress, long mergeIndexAddr, long txnInfo, long txnCount, long symbolMapAddress, long symbolMapSize);
+
+    public static native long mergeShuffleVarcharColumnFromManyAddresses(long indexFormat, long primaryAddressList, long secondaryAddressList, long outPrimaryAddress, long outSecondaryAddress, long mergeIndexAddr, long destVarOffset, long destDataSize);
+
     public static native long mergeTwoLongIndexesAsc(long pTs, long tsIndexLo, long tsCount, long pIndex2, long index2Count, long pIndexDest);
 
     public static native double minDouble(long pDouble, long count);
@@ -265,10 +317,46 @@ public final class Vect {
 
     public static native void quickSortLongIndexAscInPlace(long pLongData, long count);
 
-    public static native void radixSortABLongIndexAsc(long pDataA, long countA, long pDataB, long countB, long pDataDest, long pDataCpy);
+    public static native long radixSortABLongIndexAsc(
+            long pDataA,
+            long countA,
+            long pDataB,
+            long countB,
+            long pDataDest,
+            long pDataCpy,
+            long minTimestamp,
+            long maxTimestamp
+    );
+
+    public static void radixSortLongIndexAscChecked(long pLongData, long count, long pCpy, long min, long max) {
+        long resultCount = radixSortLongIndexAsc(pLongData, count, pCpy, min, max);
+        assert resultCount == count : "radix sort error result =" + resultCount + ", expected=" + count;
+    }
 
     // This is not In Place sort, to be renamed later
     public static native void radixSortLongIndexAscInPlace(long pLongData, long count, long pCpy);
+
+    public static native long radixSortManySegmentsIndexAsc(
+            long tsOutAddr,
+            long tsOutAddrCopy,
+            long segmentAddresses,
+            int segmentCount,
+            long txnInfo,
+            long txnCount,
+            long maxSegmentRowCount,
+            long tsLagRowAddr,
+            long tsLagRowCount,
+            long minTimestamp,
+            long maxTimestamp,
+            long totalRows,
+            byte resultFormat
+    );
+
+    public static long readIndexResultRowCount(long indexFormat) {
+        return indexFormat & 0xFFFFFFFFFFFFL;
+    }
+
+    public static native long remapSymbolColumnFromManyAddresses(long srcAddresses, long dstAddress, long txnInfo, long txnCount, long symbolMapAddress);
 
     public static native void resetPerformanceCounters();
 
@@ -293,6 +381,13 @@ public final class Vect {
     public static native void shiftCopyVarcharColumnAux(long shift, long srcAddr, long srcLo, long srcHi, long dstAddr);
 
     public static native long shiftTimestampIndex(long pSrc, long count, long pDest);
+
+    public static native long shuffleSymbolColumnByReverseIndex(
+            long indexFormat,
+            long srcAddresses,
+            long dstAddress,
+            long mergeIndexAddr
+    );
 
     /**
      * Sorts assuming 128-bit integers.
@@ -366,6 +461,8 @@ public final class Vect {
 
     // accept externally allocated memory for merged index of proper size
     private static native void mergeLongIndexesAscInner(long pIndexStructArray, int count, long mergedIndexAddr);
+
+    private static native long radixSortLongIndexAsc(long pLongData, long count, long pCpy, long min, long max);
 
     static {
         Os.init();

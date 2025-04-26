@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
                         "select cast(x as symbol) as id, cast(x as double) as reading  from long_sequence(9)), index(id)",
                 null,
                 true,
-                false
+                true
         );
     }
 
@@ -54,7 +54,7 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
                         "select cast(x as symbol) as id, cast(x as double) as reading  from long_sequence(9)), index(id)",
                 null,
                 true,
-                false
+                true
         );
     }
 
@@ -62,25 +62,27 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
     public void testDistinctOnIndexedSymbolColumnWithLimitInInnerQuery() throws Exception {
         assertQuery(
                 "id\n1\n2\n",
-                "SELECT DISTINCT id from ( select id FROM test LIMIT 2 ) ",
+                "SELECT DISTINCT id from ( select id FROM test LIMIT 2 ) order by 1",
                 "CREATE TABLE test as (" +
                         "select cast(x as symbol) as id, rnd_double() as reading  from long_sequence(9)), index(id)",
                 null,
                 true,
-                false
+                true
         );
     }
 
     @Test
     public void testDistinctOnIndexedSymbolColumnWithOrderByLimitInInnerQuery() throws Exception {
         assertQuery(
-                "id\n9\n8\n",
-                "SELECT DISTINCT id from ( select id FROM test ORDER BY id desc LIMIT 2 ) ",
+                "id\n" +
+                        "9\n" +
+                        "8\n",
+                "SELECT DISTINCT id from ( select id FROM test ORDER BY id desc LIMIT 2 ) order by 1 desc",
                 "CREATE TABLE test as (" +
                         "select cast(x as symbol) as id, rnd_double() as reading  from long_sequence(9) order by 2), index(id)",
                 null,
                 true,
-                false
+                true
         );
     }
 
@@ -98,13 +100,45 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
     }
 
     @Test
+    public void testDistinctOnNonIndexedColumnWithLimit() throws Exception {
+        assertQuery(
+                "id\treading\n" +
+                        "8\t8.0\n" +
+                        "9\t9.0\n",
+                "select DISTINCT id, reading FROM limtest LIMIT -2",
+                "CREATE TABLE limtest as (" +
+                        "select x as id, cast(x as double) as reading  from long_sequence(9))",
+                null,
+                true,
+                true
+        );
+    }
+
+    @Test
+    public void testDistinctOnNonIndexedColumnWithLimitAndVirtualColumn() throws Exception {
+        assertQuery(
+                "id\treading\tthe_answer\n" +
+                        "1\t1.0\t1764\n" +
+                        "2\t2.0\t1764\n",
+                "select DISTINCT id, reading, 42*42 the_answer FROM limtest LIMIT 2",
+                "CREATE TABLE limtest as (" +
+                        "select x as id, cast(x as double) as reading  from long_sequence(9))",
+                null,
+                true,
+                true
+        );
+    }
+
+    @Test
     public void testDistinctOnNonIndexedRepeatingSymbolColumnWithLimitOrderByAscInSubqueryV2() throws Exception {
         assertQuery(
                 "id\n1\n0\n",
                 "select DISTINCT id FROM ( select id from limtest order by id asc LIMIT 4) order by id desc",
                 "CREATE TABLE limtest as (" +
                         "select cast(x%3 as symbol) as id, cast(x as double) as reading  from long_sequence(9))",
-                null
+                null,
+                true,
+                true
         );
     }
 
@@ -115,7 +149,9 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
                 "select DISTINCT id FROM ( select id from limtest order by id desc LIMIT 4) order by id asc",
                 "CREATE TABLE limtest as (" +
                         "select cast(x%3 as symbol) as id, cast(x as double) as reading  from long_sequence(9))",
-                null
+                null,
+                true,
+                true
         );
     }
 
@@ -128,7 +164,7 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
                         "select cast(x as symbol) as id, cast(x as double) as reading  from long_sequence(9))",
                 null,
                 true,
-                false
+                true
         );
     }
 
@@ -141,7 +177,7 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
                         "select cast(x as symbol) as id, cast(x as double) as reading  from long_sequence(9))",
                 null,
                 true,
-                false
+                true
         );
     }
 
@@ -165,7 +201,7 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
                 "CREATE TABLE limtest as (select cast((x%6) as symbol) as id from long_sequence(20))",
                 null,
                 true,
-                false
+                true
         );
     }
 
@@ -201,7 +237,9 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
                 "select DISTINCT id FROM ( select id from limtest order by id desc LIMIT 2) order by id asc",
                 "CREATE TABLE limtest as (" +
                         "select cast(x as symbol) as id, cast(x as double) as reading  from long_sequence(9))",
-                null
+                null,
+                true,
+                true
         );
     }
 
@@ -312,12 +350,12 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
     public void testDistinctWithLimitOnLongColumn() throws Exception {
         assertQuery(
                 "id\n9\n8\n",
-                "select DISTINCT id FROM limtest LIMIT 2",
+                "select DISTINCT id FROM limtest order by 1 desc LIMIT 2",
                 "CREATE TABLE limtest as (" +
                         "select 10-x as id from long_sequence(9)) ",
                 null,
                 true,
-                false
+                true
         );
     }
 
@@ -375,7 +413,7 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
                 "CREATE TABLE test as ( select x as id from long_sequence(9) )",
                 null,
                 true,
-                false
+                true
         );
     }
 
@@ -431,7 +469,7 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
                 "CREATE TABLE test as ( select x as id from long_sequence(9) )",
                 null,
                 true,
-                false
+                true
         );
     }
 
@@ -500,7 +538,7 @@ public class DistinctWithLimitTest extends AbstractCairoTest {
                 "CREATE TABLE test as ( select x as id from long_sequence(9) )",
                 null,
                 true,
-                false
+                true
         );
     }
 }

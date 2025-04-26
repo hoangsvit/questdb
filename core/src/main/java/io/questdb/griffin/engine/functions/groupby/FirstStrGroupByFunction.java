@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -60,7 +60,7 @@ public class FirstStrGroupByFunction extends StrFunction implements GroupByFunct
             mapValue.putBool(valueIndex + 2, true);
         } else {
             sink.of(0).clearAndSet(val);
-            mapValue.putLong(valueIndex + 1, sink.ptr());
+            mapValue.putLong(valueIndex + 1, sink.colouredPtr());
             mapValue.putBool(valueIndex + 2, false);
         }
     }
@@ -119,12 +119,12 @@ public class FirstStrGroupByFunction extends StrFunction implements GroupByFunct
     }
 
     @Override
-    public boolean isReadThreadSafe() {
+    public boolean isScalar() {
         return false;
     }
 
     @Override
-    public boolean isScalar() {
+    public boolean isThreadSafe() {
         return false;
     }
 
@@ -132,7 +132,7 @@ public class FirstStrGroupByFunction extends StrFunction implements GroupByFunct
     public void merge(MapValue destValue, MapValue srcValue) {
         long srcRowId = srcValue.getLong(valueIndex);
         long destRowId = destValue.getLong(valueIndex);
-        if (srcRowId != Numbers.LONG_NaN && (srcRowId < destRowId || destRowId == Numbers.LONG_NaN)) {
+        if (srcRowId != Numbers.LONG_NULL && (srcRowId < destRowId || destRowId == Numbers.LONG_NULL)) {
             destValue.putLong(valueIndex, srcRowId);
             destValue.putLong(valueIndex + 1, srcValue.getLong(valueIndex + 1));
             destValue.putBool(valueIndex + 2, srcValue.getBool(valueIndex + 2));
@@ -146,7 +146,7 @@ public class FirstStrGroupByFunction extends StrFunction implements GroupByFunct
 
     @Override
     public void setNull(MapValue mapValue) {
-        mapValue.putLong(valueIndex, Numbers.LONG_NaN);
+        mapValue.putLong(valueIndex, Numbers.LONG_NULL);
         mapValue.putLong(valueIndex + 1, 0);
         mapValue.putBool(valueIndex + 2, true);
     }

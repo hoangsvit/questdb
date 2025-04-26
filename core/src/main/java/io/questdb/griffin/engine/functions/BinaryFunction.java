@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -38,6 +38,20 @@ public interface BinaryFunction extends Function {
         getRight().close();
     }
 
+    @Override
+    default void cursorClosed() {
+        getLeft().cursorClosed();
+        getRight().cursorClosed();
+    }
+
+    @Override
+    default void offerStateTo(Function that) {
+        if (that instanceof BinaryFunction) {
+            getLeft().offerStateTo(((BinaryFunction) that).getLeft());
+            getRight().offerStateTo(((BinaryFunction) that).getRight());
+        }
+    }
+
     Function getLeft();
 
     Function getRight();
@@ -49,14 +63,13 @@ public interface BinaryFunction extends Function {
     }
 
     @Override
-    default void initCursor() {
-        getLeft().initCursor();
-        getRight().initCursor();
+    default boolean isConstant() {
+        return getLeft().isConstant() && getRight().isConstant();
     }
 
     @Override
-    default boolean isConstant() {
-        return getLeft().isConstant() && getRight().isConstant();
+    default boolean isNonDeterministic() {
+        return getLeft().isNonDeterministic() || getRight().isNonDeterministic();
     }
 
     // used in generic toSink implementation
@@ -65,14 +78,15 @@ public interface BinaryFunction extends Function {
     }
 
     @Override
-    default boolean isReadThreadSafe() {
-        return getLeft().isReadThreadSafe() && getRight().isReadThreadSafe();
-    }
-
     default boolean isRuntimeConstant() {
         final Function l = getLeft();
         final Function r = getRight();
         return (l.isConstant() && r.isRuntimeConstant()) || (r.isConstant() && l.isRuntimeConstant()) || (l.isRuntimeConstant() && r.isRuntimeConstant());
+    }
+
+    @Override
+    default boolean isThreadSafe() {
+        return getLeft().isThreadSafe() && getRight().isThreadSafe();
     }
 
     @Override

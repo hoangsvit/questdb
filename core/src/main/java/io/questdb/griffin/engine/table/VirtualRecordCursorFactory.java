@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -48,6 +48,7 @@ public class VirtualRecordCursorFactory extends AbstractRecordCursorFactory {
             RecordCursorFactory base
     ) {
         super(metadata);
+        this.base = base;
         this.functions = functions;
         boolean supportsRandomAccess = base.recordCursorSupportsRandomAccess();
         for (int i = 0, n = functions.size(); i < n; i++) {
@@ -58,7 +59,6 @@ public class VirtualRecordCursorFactory extends AbstractRecordCursorFactory {
         }
         this.supportsRandomAccess = supportsRandomAccess;
         this.cursor = new VirtualFunctionDirectSymbolRecordCursor(functions, supportsRandomAccess);
-        this.base = base;
     }
 
     @Override
@@ -80,7 +80,7 @@ public class VirtualRecordCursorFactory extends AbstractRecordCursorFactory {
     public RecordCursor getCursor(SqlExecutionContext executionContext) throws SqlException {
         RecordCursor cursor = base.getCursor(executionContext);
         try {
-            Function.init(functions, cursor, executionContext);
+            Function.init(functions, cursor, executionContext, null);
             this.cursor.of(cursor);
             return this.cursor;
         } catch (Throwable th) {

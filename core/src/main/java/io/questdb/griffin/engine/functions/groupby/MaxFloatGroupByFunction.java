@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@ import io.questdb.cairo.sql.Record;
 import io.questdb.griffin.engine.functions.FloatFunction;
 import io.questdb.griffin.engine.functions.GroupByFunction;
 import io.questdb.griffin.engine.functions.UnaryFunction;
+import io.questdb.std.Numbers;
 import org.jetbrains.annotations.NotNull;
 
 public class MaxFloatGroupByFunction extends FloatFunction implements GroupByFunction, UnaryFunction {
@@ -51,7 +52,7 @@ public class MaxFloatGroupByFunction extends FloatFunction implements GroupByFun
     public void computeNext(MapValue mapValue, Record record, long rowId) {
         float max = mapValue.getFloat(valueIndex);
         float next = arg.getFloat(record);
-        if (next > max || Float.isNaN(max)) {
+        if (next > max || Numbers.isNull(max)) {
             mapValue.putFloat(valueIndex, next);
         }
     }
@@ -69,6 +70,11 @@ public class MaxFloatGroupByFunction extends FloatFunction implements GroupByFun
     @Override
     public String getName() {
         return "max";
+    }
+
+    @Override
+    public int getSampleByFlags() {
+        return GroupByFunction.SAMPLE_BY_FILL_ALL;
     }
 
     @Override
@@ -93,15 +99,15 @@ public class MaxFloatGroupByFunction extends FloatFunction implements GroupByFun
     }
 
     @Override
-    public boolean isReadThreadSafe() {
-        return UnaryFunction.super.isReadThreadSafe();
+    public boolean isThreadSafe() {
+        return UnaryFunction.super.isThreadSafe();
     }
 
     @Override
     public void merge(MapValue destValue, MapValue srcValue) {
         float srcMax = srcValue.getFloat(valueIndex);
         float destMax = destValue.getFloat(valueIndex);
-        if (srcMax > destMax || Float.isNaN(destMax)) {
+        if (srcMax > destMax || Numbers.isNull(destMax)) {
             destValue.putFloat(valueIndex, srcMax);
         }
     }

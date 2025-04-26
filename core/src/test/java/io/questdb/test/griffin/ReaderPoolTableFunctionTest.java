@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -28,8 +28,11 @@ import io.questdb.cairo.ColumnType;
 import io.questdb.cairo.PartitionBy;
 import io.questdb.cairo.TableReader;
 import io.questdb.cairo.pool.ReaderPool;
+import io.questdb.cairo.sql.Function;
 import io.questdb.cairo.sql.Record;
-import io.questdb.cairo.sql.*;
+import io.questdb.cairo.sql.RecordCursor;
+import io.questdb.cairo.sql.RecordCursorFactory;
+import io.questdb.cairo.sql.RecordMetadata;
 import io.questdb.griffin.SqlException;
 import io.questdb.griffin.engine.functions.table.ReaderPoolFunctionFactory;
 import io.questdb.griffin.engine.table.ReaderPoolRecordCursorFactory;
@@ -72,7 +75,7 @@ public class ReaderPoolTableFunctionTest extends AbstractCairoTest {
 
     @Test
     public void testEmptyPool() throws Exception {
-        assertMemoryLeak(() -> assertSql("table_name\towner_thread_id\tlast_access_timestamp\tcurrent_txn\n", "select * from reader_pool()"));
+        assertQuery("table_name\towner_thread_id\tlast_access_timestamp\tcurrent_txn\n", "select * from reader_pool()", null);
     }
 
     @Test
@@ -130,8 +133,8 @@ public class ReaderPoolTableFunctionTest extends AbstractCairoTest {
 
             // all readers should be released. there should have a timestamp set >= timestamp when all readers were acquired
             assertReaderPool(readerAcquisitionCount * 2, eitherOf(
-                    recordValidator(allReadersAcquiredTime, "tab1", Numbers.LONG_NaN, 1),
-                    recordValidator(allReadersAcquiredTime, "tab2", Numbers.LONG_NaN, 1))
+                    recordValidator(allReadersAcquiredTime, "tab1", Numbers.LONG_NULL, 1),
+                    recordValidator(allReadersAcquiredTime, "tab2", Numbers.LONG_NULL, 1))
             );
         });
     }
@@ -188,7 +191,7 @@ public class ReaderPoolTableFunctionTest extends AbstractCairoTest {
             });
 
             // all readers should be released. they should have a timestamp set >= timestamp when all readers were acquired
-            assertReaderPool(readerAcquisitionCount, recordValidator(allReadersAcquiredTime, tableName, Numbers.LONG_NaN, 4));
+            assertReaderPool(readerAcquisitionCount, recordValidator(allReadersAcquiredTime, tableName, Numbers.LONG_NULL, 4));
         });
     }
 
@@ -211,7 +214,7 @@ public class ReaderPoolTableFunctionTest extends AbstractCairoTest {
 
             // check table reader timestamp was updated when it was returned to the pool
             assertTrue(allReadersAcquiredTime > startTime);
-            assertReaderPool(1, recordValidator(allReadersAcquiredTime, "tab1", Numbers.LONG_NaN, 1));
+            assertReaderPool(1, recordValidator(allReadersAcquiredTime, "tab1", Numbers.LONG_NULL, 1));
 
             // acquire again and check timestamp made progress
             // this is to make sure time is updated on re-acquisition too
@@ -234,8 +237,12 @@ public class ReaderPoolTableFunctionTest extends AbstractCairoTest {
                     "2020-01-01T00:00:00.000000Z\t1\n" +
                     "2020-01-01T00:00:00.000000Z\t2\n", "select * from tab1");
 
-            assertSql("table_name\towner_thread_id\tcurrent_txn\n" +
-                    "tab1\tNaN\t1\n", "select table_name, owner_thread_id, current_txn from reader_pool");
+            assertQueryNoLeakCheck(
+                    "table_name\towner_thread_id\tcurrent_txn\n" +
+                            "tab1\tnull\t1\n",
+                    "select table_name, owner_thread_id, current_txn from reader_pool",
+                    null
+            );
         });
     }
 
@@ -299,7 +306,7 @@ public class ReaderPoolTableFunctionTest extends AbstractCairoTest {
     }
 
     private static void executeTx(CharSequence tableName) throws SqlException {
-        insert("insert into " + tableName + " values (now(), 42)");
+        execute("insert into " + tableName + " values (now(), 42)");
     }
 
     private static ReaderPoolRowValidator recordValidator(long startTime, CharSequence applicableTableName, long expectedOwner, long expectedTxn) {

@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -27,7 +27,6 @@ package io.questdb.cutlass.http.processors;
 import io.questdb.cairo.sql.Record;
 import io.questdb.cairo.sql.RecordCursor;
 import io.questdb.cairo.sql.RecordCursorFactory;
-import io.questdb.cairo.sql.RecordMetadata;
 import io.questdb.cutlass.http.HttpConnectionContext;
 import io.questdb.std.Misc;
 import io.questdb.std.Mutable;
@@ -39,14 +38,13 @@ import java.io.Closeable;
 public class TextQueryProcessorState implements Mutable, Closeable {
     final StringSink query = new StringSink();
     private final HttpConnectionContext httpConnectionContext;
-    boolean hasNext;
     int columnIndex;
     long count;
     boolean countRows = false;
     RecordCursor cursor;
     char delimiter = ',';
     String fileName;
-    RecordMetadata metadata;
+    boolean hasNext;
     boolean noMeta = false;
     boolean pausedQuery = false;
     int queryState;
@@ -66,11 +64,10 @@ public class TextQueryProcessorState implements Mutable, Closeable {
     public void clear() {
         delimiter = ',';
         fileName = null;
-        metadata = null;
         rnd = null;
         record = null;
         cursor = Misc.free(cursor);
-        if (null != recordCursorFactory) {
+        if (recordCursorFactory != null) {
             if (queryCacheable) {
                 httpConnectionContext.getSelectCache().put(query, recordCursorFactory);
             } else {
@@ -96,7 +93,7 @@ public class TextQueryProcessorState implements Mutable, Closeable {
         recordCursorFactory = Misc.free(recordCursorFactory);
     }
 
-    public int getFd() {
+    public long getFd() {
         return httpConnectionContext.getFd();
     }
 

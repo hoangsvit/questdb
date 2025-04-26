@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -25,7 +25,11 @@
 package io.questdb.griffin;
 
 import io.questdb.Telemetry;
-import io.questdb.cairo.*;
+import io.questdb.cairo.CairoConfiguration;
+import io.questdb.cairo.CairoEngine;
+import io.questdb.cairo.ColumnTypes;
+import io.questdb.cairo.RecordSink;
+import io.questdb.cairo.SecurityContext;
 import io.questdb.cairo.security.DenyAllSecurityContext;
 import io.questdb.cairo.sql.AtomicBooleanCircuitBreaker;
 import io.questdb.cairo.sql.BindVariableService;
@@ -55,17 +59,21 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
     private final WindowContextImpl windowContext = new WindowContextImpl();
     private final int workerCount;
     private BindVariableService bindVariableService;
+    private boolean cacheHit = false;
     private SqlExecutionCircuitBreaker circuitBreaker = SqlExecutionCircuitBreaker.NOOP_CIRCUIT_BREAKER;
     private MicrosecondClock clock;
     private boolean cloneSymbolTables = false;
     private boolean columnPreTouchEnabled = true;
+    private boolean columnPreTouchEnabledOverride = true;
     private boolean containsSecret;
     private int jitMode;
     private long now;
     private final MicrosecondClock nowClock = () -> now;
     private boolean parallelFilterEnabled;
+    private boolean parallelGroupByEnabled;
+    private boolean parallelReadParquetEnabled;
     private Rnd random;
-    private int requestFd = -1;
+    private long requestFd = -1;
     private SecurityContext securityContext;
     private boolean useSimpleCircuitBreaker;
 
@@ -81,11 +89,13 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
         securityContext = DenyAllSecurityContext.INSTANCE;
         jitMode = cairoConfiguration.getSqlJitMode();
         parallelFilterEnabled = cairoConfiguration.isSqlParallelFilterEnabled();
+        parallelGroupByEnabled = cairoConfiguration.isSqlParallelGroupByEnabled();
+        parallelReadParquetEnabled = cairoConfiguration.isSqlParallelReadParquetEnabled();
         telemetry = cairoEngine.getTelemetry();
-        telemetryFacade = telemetry.isEnabled() ? this::doStoreTelemetry : this::storeTelemetryNoop;
+        telemetryFacade = telemetry.isEnabled() ? this::doStoreTelemetry : this::storeTelemetryNoOp;
         this.containsSecret = false;
         this.useSimpleCircuitBreaker = false;
-        this.simpleCircuitBreaker = new AtomicBooleanCircuitBreaker(cairoEngine.getConfiguration().getCircuitBreakerConfiguration().getCircuitBreakerThrottle());
+        this.simpleCircuitBreaker = new AtomicBooleanCircuitBreaker(cairoConfiguration.getCircuitBreakerConfiguration().getCircuitBreakerThrottle());
     }
 
     public SqlExecutionContextImpl(CairoEngine cairoEngine, int workerCount) {
@@ -113,7 +123,9 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
             int rowsHiKindPos,
             int exclusionKind,
             int exclusionKindPos,
-            int timestampIndex
+            int timestampIndex,
+            boolean ignoreNulls,
+            int nullsDescPos
     ) {
         windowContext.of(
                 partitionByRecord,
@@ -130,7 +142,10 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
                 rowsHiKindPos,
                 exclusionKind,
                 exclusionKindPos,
-                timestampIndex);
+                timestampIndex,
+                ignoreNulls,
+                nullsDescPos
+        );
     }
 
     @Override
@@ -193,7 +208,7 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
     }
 
     @Override
-    public int getRequestFd() {
+    public long getRequestFd() {
         return requestFd;
     }
 
@@ -224,7 +239,11 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
 
     @Override
     public void initNow() {
-        now = clock.getTicks();
+        this.now = clock.getTicks();
+    }
+
+    public boolean isCacheHit() {
+        return cacheHit;
     }
 
     @Override
@@ -233,8 +252,23 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
     }
 
     @Override
+    public boolean isColumnPreTouchEnabledOverride() {
+        return columnPreTouchEnabledOverride;
+    }
+
+    @Override
     public boolean isParallelFilterEnabled() {
         return parallelFilterEnabled;
+    }
+
+    @Override
+    public boolean isParallelGroupByEnabled() {
+        return parallelGroupByEnabled;
+    }
+
+    @Override
+    public boolean isParallelReadParquetEnabled() {
+        return parallelReadParquetEnabled;
     }
 
     @Override
@@ -258,6 +292,20 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
     }
 
     @Override
+    public void resetFlags() {
+        this.containsSecret = false;
+        this.useSimpleCircuitBreaker = false;
+        this.cacheHit = false;
+        this.columnPreTouchEnabled = true;
+        this.columnPreTouchEnabledOverride = true;
+    }
+
+    @Override
+    public void setCacheHit(boolean value) {
+        cacheHit = value;
+    }
+
+    @Override
     public void setCancelledFlag(AtomicBoolean cancelled) {
         circuitBreaker.setCancelledFlag(cancelled);
         simpleCircuitBreaker.setCancelledFlag(cancelled);
@@ -274,6 +322,11 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
     }
 
     @Override
+    public void setColumnPreTouchEnabledOverride(boolean columnPreTouchEnabledOverride) {
+        this.columnPreTouchEnabledOverride = columnPreTouchEnabledOverride;
+    }
+
+    @Override
     public void setJitMode(int jitMode) {
         this.jitMode = jitMode;
     }
@@ -287,6 +340,16 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
     @Override
     public void setParallelFilterEnabled(boolean parallelFilterEnabled) {
         this.parallelFilterEnabled = parallelFilterEnabled;
+    }
+
+    @Override
+    public void setParallelGroupByEnabled(boolean parallelGroupByEnabled) {
+        this.parallelGroupByEnabled = parallelGroupByEnabled;
+    }
+
+    @Override
+    public void setParallelReadParquetEnabled(boolean parallelReadParquetEnabled) {
+        this.parallelReadParquetEnabled = parallelReadParquetEnabled;
     }
 
     @Override
@@ -308,13 +371,13 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
         this.securityContext = securityContext;
         this.bindVariableService = bindVariableService;
         this.random = rnd;
-        this.containsSecret = false;
-        this.useSimpleCircuitBreaker = false;
+        resetFlags();
         return this;
     }
 
-    public void with(int requestFd) {
+    public void with(long requestFd) {
         this.requestFd = requestFd;
+        resetFlags();
     }
 
     public void with(BindVariableService bindVariableService) {
@@ -325,6 +388,10 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
         this.circuitBreaker = circuitBreaker;
     }
 
+    public SqlExecutionContextImpl with(@NotNull SecurityContext securityContext) {
+        return with(securityContext, null, null, -1, null);
+    }
+
     public SqlExecutionContextImpl with(@NotNull SecurityContext securityContext, @Nullable BindVariableService bindVariableService) {
         return with(securityContext, bindVariableService, null, -1, null);
     }
@@ -333,7 +400,7 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
             @NotNull SecurityContext securityContext,
             @Nullable BindVariableService bindVariableService,
             @Nullable Rnd rnd,
-            int requestFd,
+            long requestFd,
             @Nullable SqlExecutionCircuitBreaker circuitBreaker
     ) {
         this.securityContext = securityContext;
@@ -341,8 +408,7 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
         this.random = rnd;
         this.requestFd = requestFd;
         this.circuitBreaker = circuitBreaker == null ? SqlExecutionCircuitBreaker.NOOP_CIRCUIT_BREAKER : circuitBreaker;
-        this.containsSecret = false;
-        this.useSimpleCircuitBreaker = false;
+        resetFlags();
         return this;
     }
 
@@ -350,7 +416,7 @@ public class SqlExecutionContextImpl implements SqlExecutionContext {
         TelemetryTask.store(telemetry, origin, event);
     }
 
-    private void storeTelemetryNoop(short event, short origin) {
+    private void storeTelemetryNoOp(short event, short origin) {
     }
 
     @FunctionalInterface

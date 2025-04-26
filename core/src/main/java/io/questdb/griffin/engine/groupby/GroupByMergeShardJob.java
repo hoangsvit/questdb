@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ package io.questdb.griffin.engine.groupby;
 
 import io.questdb.MessageBus;
 import io.questdb.cairo.sql.AtomicBooleanCircuitBreaker;
+import io.questdb.cairo.sql.ExecutionCircuitBreaker;
 import io.questdb.griffin.engine.table.AsyncGroupByAtom;
 import io.questdb.log.Log;
 import io.questdb.log.LogFactory;
@@ -34,6 +35,8 @@ import io.questdb.mp.CountDownLatchSPI;
 import io.questdb.mp.Sequence;
 import io.questdb.tasks.GroupByMergeShardTask;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 public class GroupByMergeShardJob extends AbstractQueueConsumerJob<GroupByMergeShardTask> {
     private static final Log LOG = LogFactory.getLog(GroupByMergeShardJob.class);
 
@@ -41,8 +44,15 @@ public class GroupByMergeShardJob extends AbstractQueueConsumerJob<GroupByMergeS
         super(messageBus.getGroupByMergeShardQueue(), messageBus.getGroupByMergeShardSubSeq());
     }
 
-    public static void run(int workerId, GroupByMergeShardTask task, Sequence subSeq, long cursor) {
+    public static void run(
+            int workerId,
+            GroupByMergeShardTask task,
+            Sequence subSeq,
+            long cursor,
+            AsyncGroupByAtom stealingAtom
+    ) {
         final AtomicBooleanCircuitBreaker circuitBreaker = task.getCircuitBreaker();
+        final AtomicInteger startedCounter = task.getStartedCounter();
         final CountDownLatchSPI doneLatch = task.getDoneLatch();
         final AsyncGroupByAtom atom = task.getAtom();
         final int shardIndex = task.getShardIndex();
@@ -50,17 +60,23 @@ public class GroupByMergeShardJob extends AbstractQueueConsumerJob<GroupByMergeS
         task.clear();
         subSeq.done(cursor);
 
-        final int slotId = atom.acquire(workerId, circuitBreaker);
+        startedCounter.incrementAndGet();
+
+        final boolean owner = stealingAtom != null && stealingAtom == atom;
         try {
-            if (circuitBreaker.checkIfTripped()) {
-                return;
+            final int slotId = atom.maybeAcquire(workerId, owner, (ExecutionCircuitBreaker) circuitBreaker);
+            try {
+                if (circuitBreaker.checkIfTripped()) {
+                    return;
+                }
+                atom.mergeShard(slotId, shardIndex);
+            } finally {
+                atom.release(slotId);
             }
-            atom.mergeShard(slotId, shardIndex);
-        } catch (Throwable e) {
-            LOG.error().$("merge shard failed [ex=").$(e).I$();
+        } catch (Throwable th) {
+            LOG.error().$("merge shard failed [error=").$(th).I$();
             circuitBreaker.cancel();
         } finally {
-            atom.release(slotId);
             doneLatch.countDown();
         }
     }
@@ -68,7 +84,7 @@ public class GroupByMergeShardJob extends AbstractQueueConsumerJob<GroupByMergeS
     @Override
     protected boolean doRun(int workerId, long cursor, RunStatus runStatus) {
         final GroupByMergeShardTask task = queue.get(cursor);
-        run(workerId, task, subSeq, cursor);
+        run(workerId, task, subSeq, cursor, null);
         return true;
     }
 }

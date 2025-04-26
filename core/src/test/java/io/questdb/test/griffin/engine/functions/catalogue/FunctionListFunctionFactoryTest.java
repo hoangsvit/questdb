@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@
 package io.questdb.test.griffin.engine.functions.catalogue;
 
 import io.questdb.griffin.FunctionFactory;
+import io.questdb.griffin.FunctionFactoryCacheBuilder;
 import io.questdb.griffin.FunctionFactoryDescriptor;
 import io.questdb.griffin.engine.functions.catalogue.FunctionListFunctionFactory;
 import io.questdb.std.str.StringSink;
@@ -34,7 +35,6 @@ import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -50,13 +50,15 @@ public class FunctionListFunctionFactoryTest extends AbstractCairoTest {
 
     @Test
     public void testFunctionsWithFilter() throws Exception {
-        printSql("SELECT name FROM (SELECT name, count(name) FROM functions() GROUP BY name, type ORDER BY name)");
-        Assert.assertEquals(expectedFunctionNames(), extractFunctionNamesFromSink());
+        assertMemoryLeak(() -> {
+            printSql("SELECT name FROM (SELECT name, count(name) FROM functions() GROUP BY name, type ORDER BY name)");
+            Assert.assertEquals(expectedFunctionNames(), extractFunctionNamesFromSink());
+        });
     }
 
     private static Set<String> expectedFunctionNames() {
         Set<String> names = new HashSet<>();
-        for (FunctionFactory factory : ServiceLoader.load(FunctionFactory.class, FunctionFactory.class.getClassLoader())) {
+        for (FunctionFactory factory : new FunctionFactoryCacheBuilder().scan(LOG).build()) {
             String signature = factory.getSignature();
             String name = signature.substring(0, signature.indexOf('('));
             if (isExcluded(name)) {
@@ -70,7 +72,7 @@ public class FunctionListFunctionFactoryTest extends AbstractCairoTest {
     private static Set<String> expectedFunctions() {
         Set<String> lines = new HashSet<>();
         StringSink sink2 = new StringSink();
-        for (FunctionFactory factory : ServiceLoader.load(FunctionFactory.class, FunctionFactory.class.getClassLoader())) {
+        for (FunctionFactory factory : new FunctionFactoryCacheBuilder().scan(LOG).build()) {
             String signature = factory.getSignature();
             String name = signature.substring(0, signature.indexOf('('));
             if (isExcluded(name)) {

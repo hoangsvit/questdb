@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -24,7 +24,14 @@
 
 package io.questdb.griffin.engine.table;
 
-import io.questdb.cairo.*;
+import io.questdb.cairo.AbstractRecordCursorFactory;
+import io.questdb.cairo.CairoEngine;
+import io.questdb.cairo.CairoException;
+import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.GenericRecordMetadata;
+import io.questdb.cairo.TableColumnMetadata;
+import io.questdb.cairo.TableToken;
+import io.questdb.cairo.TableUtils;
 import io.questdb.cairo.pool.WriterPool;
 import io.questdb.cairo.sql.NoRandomAccessRecordCursor;
 import io.questdb.cairo.sql.Record;
@@ -38,11 +45,11 @@ import java.util.Iterator;
 import java.util.Map;
 
 public final class WriterPoolRecordCursorFactory extends AbstractRecordCursorFactory {
+    private static final int LAST_ACCESS_TIMESTAMP_COLUMN_INDEX = 2;
     private static final RecordMetadata METADATA;
+    private static final int OWNERSHIP_REASON_COLUMN_INDEX = 3;
     private static final int OWNER_THREAD_COLUMN_INDEX = 1;
     private static final int TABLE_NAME_COLUMN_INDEX = 0;
-    private static final int LAST_ACCESS_TIMESTAMP_COLUMN_INDEX = 2;
-    private static final int OWNERSHIP_REASON_COLUMN_INDEX = 3;
     private final CairoEngine cairoEngine;
 
     public WriterPoolRecordCursorFactory(CairoEngine cairoEngine) {
@@ -70,11 +77,12 @@ public final class WriterPoolRecordCursorFactory extends AbstractRecordCursorFac
     private static class WriterPoolCursor implements NoRandomAccessRecordCursor {
         private final ReaderPoolEntryRecord record = new ReaderPoolEntryRecord();
         private Iterator<Map.Entry<CharSequence, WriterPool.Entry>> iterator;
-        private long owner_thread;
-        private Map<CharSequence, WriterPool.Entry> writerPoolEntries;
-        private TableToken tableToken;
-        private String ownershipReason;
         private long lastAccessTimestamp;
+        private long ownerThread;
+        private String ownershipReason;
+        private TableToken tableToken;
+        private Map<CharSequence, WriterPool.Entry> writerPoolEntries;
+
         @Override
         public void close() {
         }
@@ -89,7 +97,7 @@ public final class WriterPoolRecordCursorFactory extends AbstractRecordCursorFac
             if (iterator.hasNext()) {
                 Map.Entry<CharSequence, WriterPool.Entry> mapEntry = iterator.next();
                 final WriterPool.Entry poolEntry = mapEntry.getValue();
-                owner_thread = poolEntry.getOwnerThread();
+                ownerThread = poolEntry.getOwnerThread();
                 lastAccessTimestamp = poolEntry.getLastReleaseTime();
                 tableToken = poolEntry.getTableToken();
                 ownershipReason = poolEntry.getOwnershipReason();
@@ -117,7 +125,7 @@ public final class WriterPoolRecordCursorFactory extends AbstractRecordCursorFac
             @Override
             public long getLong(int col) {
                 if (col == OWNER_THREAD_COLUMN_INDEX) {
-                    return owner_thread == -1 ? Numbers.LONG_NaN : owner_thread;
+                    return ownerThread == -1 ? Numbers.LONG_NULL : ownerThread;
                 }
                 throw CairoException.nonCritical().put("unsupported column number. [column=").put(col).put("]");
             }
@@ -140,6 +148,11 @@ public final class WriterPoolRecordCursorFactory extends AbstractRecordCursorFac
             }
 
             @Override
+            public int getStrLen(int col) {
+                return TableUtils.lengthOf(getStrA(col));
+            }
+
+            @Override
             public long getTimestamp(int col) {
                 assert col == LAST_ACCESS_TIMESTAMP_COLUMN_INDEX;
                 return lastAccessTimestamp;
@@ -152,8 +165,7 @@ public final class WriterPoolRecordCursorFactory extends AbstractRecordCursorFac
         metadata.add(TABLE_NAME_COLUMN_INDEX, new TableColumnMetadata("table_name", ColumnType.STRING))
                 .add(OWNER_THREAD_COLUMN_INDEX, new TableColumnMetadata("owner_thread_id", ColumnType.LONG))
                 .add(LAST_ACCESS_TIMESTAMP_COLUMN_INDEX, new TableColumnMetadata("last_access_timestamp", ColumnType.TIMESTAMP))
-                .add(OWNERSHIP_REASON_COLUMN_INDEX, new TableColumnMetadata("ownership_reason", ColumnType.STRING))
-        ;
+                .add(OWNERSHIP_REASON_COLUMN_INDEX, new TableColumnMetadata("ownership_reason", ColumnType.STRING));
         METADATA = metadata;
     }
 }

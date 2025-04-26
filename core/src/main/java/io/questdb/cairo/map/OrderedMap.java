@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -24,11 +24,27 @@
 
 package io.questdb.cairo.map;
 
-import io.questdb.cairo.*;
+import io.questdb.cairo.CairoException;
+import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.ColumnTypes;
+import io.questdb.cairo.RecordSink;
+import io.questdb.cairo.Reopenable;
+import io.questdb.cairo.TableUtils;
+import io.questdb.cairo.VarcharTypeDriver;
 import io.questdb.cairo.sql.Record;
 import io.questdb.cairo.sql.RecordCursor;
 import io.questdb.griffin.engine.LimitOverflowException;
-import io.questdb.std.*;
+import io.questdb.std.BinarySequence;
+import io.questdb.std.DirectIntList;
+import io.questdb.std.Hash;
+import io.questdb.std.Interval;
+import io.questdb.std.Long256;
+import io.questdb.std.MemoryTag;
+import io.questdb.std.Misc;
+import io.questdb.std.Numbers;
+import io.questdb.std.Transient;
+import io.questdb.std.Unsafe;
+import io.questdb.std.Vect;
 import io.questdb.std.bytes.Bytes;
 import io.questdb.std.str.Utf8Sequence;
 import org.jetbrains.annotations.NotNull;
@@ -75,10 +91,10 @@ import static io.questdb.std.Numbers.MAX_SAFE_INT_POW_2;
  * Length field is present for var-size keys only. It stores key length in bytes.
  */
 public class OrderedMap implements Map, Reopenable {
-
     static final long VAR_KEY_HEADER_SIZE = 4;
     private static final long MAX_HEAP_SIZE = (Integer.toUnsignedLong(-1) - 1) << 3;
     private static final int MIN_KEY_CAPACITY = 16;
+
     private final OrderedMapCursor cursor;
     private final int heapMemoryTag;
     private final Key key;
@@ -99,7 +115,7 @@ public class OrderedMap implements Map, Reopenable {
     private long heapLimit; // Heap memory limit pointer.
     private long heapSize;
     private long heapStart; // Heap memory start pointer.
-    private int initialHeapSize;
+    private long initialHeapSize;
     private int initialKeyCapacity;
     private long kPos;      // Current key-value memory pointer (contains searched key / pending key-value pair).
     private int keyCapacity;
@@ -111,7 +127,7 @@ public class OrderedMap implements Map, Reopenable {
     private int size = 0;
 
     public OrderedMap(
-            int heapSize,
+            long heapSize,
             @Transient @NotNull ColumnTypes keyTypes,
             int keyCapacity,
             double loadFactor,
@@ -121,7 +137,7 @@ public class OrderedMap implements Map, Reopenable {
     }
 
     public OrderedMap(
-            int heapSize,
+            long heapSize,
             @Transient @NotNull ColumnTypes keyTypes,
             @Transient @Nullable ColumnTypes valueTypes,
             int keyCapacity,
@@ -133,7 +149,7 @@ public class OrderedMap implements Map, Reopenable {
     }
 
     public OrderedMap(
-            int heapSize,
+            long heapSize,
             @Transient @NotNull ColumnTypes keyTypes,
             @Transient @Nullable ColumnTypes valueTypes,
             int keyCapacity,
@@ -144,7 +160,7 @@ public class OrderedMap implements Map, Reopenable {
     }
 
     OrderedMap(
-            int heapSize,
+            long heapSize,
             @NotNull @Transient ColumnTypes keyTypes,
             @Nullable @Transient ColumnTypes valueTypes,
             int keyCapacity,
@@ -156,77 +172,86 @@ public class OrderedMap implements Map, Reopenable {
         assert heapSize > 3;
         assert loadFactor > 0 && loadFactor < 1d;
 
-        this.heapMemoryTag = heapMemoryTag;
-        this.listMemoryTag = listMemoryTag;
-        initialHeapSize = heapSize;
-        this.loadFactor = loadFactor;
-        heapStart = kPos = Unsafe.malloc(this.heapSize = heapSize, heapMemoryTag);
-        heapLimit = heapStart + heapSize;
-        this.keyCapacity = (int) (keyCapacity / loadFactor);
-        this.keyCapacity = this.initialKeyCapacity = Math.max(Numbers.ceilPow2(this.keyCapacity), MIN_KEY_CAPACITY);
-        mask = this.keyCapacity - 1;
-        free = (int) (this.keyCapacity * loadFactor);
-        offsets = new DirectIntList((long) this.keyCapacity << 1, listMemoryTag);
-        offsets.setPos((long) this.keyCapacity << 1);
-        offsets.zero(0);
-        nResizes = 0;
-        this.maxResizes = maxResizes;
+        try {
+            this.heapMemoryTag = heapMemoryTag;
+            this.listMemoryTag = listMemoryTag;
+            initialHeapSize = heapSize;
+            this.loadFactor = loadFactor;
+            heapStart = kPos = Unsafe.malloc(heapSize, heapMemoryTag);
+            this.heapSize = heapSize;
+            heapLimit = heapStart + heapSize;
+            this.keyCapacity = (int) (keyCapacity / loadFactor);
+            this.keyCapacity = this.initialKeyCapacity = Math.max(Numbers.ceilPow2(this.keyCapacity), MIN_KEY_CAPACITY);
+            mask = this.keyCapacity - 1;
+            free = (int) (this.keyCapacity * loadFactor);
+            offsets = new DirectIntList((long) this.keyCapacity << 1, listMemoryTag);
+            offsets.setPos((long) this.keyCapacity << 1);
+            offsets.zero(0);
+            nResizes = 0;
+            this.maxResizes = maxResizes;
 
-        final int keyColumnCount = keyTypes.getColumnCount();
-        long keySize = 0;
-        for (int i = 0; i < keyColumnCount; i++) {
-            final int columnType = keyTypes.getColumnType(i);
-            final int size = ColumnType.sizeOf(columnType);
-            if (size > 0) {
-                keySize += size;
-            } else {
-                keySize = -1;
-                break;
-            }
-        }
-        this.keySize = keySize;
-
-        // Reserve 4 bytes for key length in case of var-size keys.
-        keyOffset = keySize != -1 ? 0 : Integer.BYTES;
-
-        long valueOffset = 0;
-        long[] valueOffsets = null;
-        long valueSize = 0;
-        if (valueTypes != null) {
-            valueColumnCount = valueTypes.getColumnCount();
-            valueOffsets = new long[valueColumnCount];
-
-            for (int i = 0; i < valueColumnCount; i++) {
-                valueOffsets[i] = valueOffset;
-                final int columnType = valueTypes.getColumnType(i);
+            final int keyColumnCount = keyTypes.getColumnCount();
+            long keySize = 0;
+            for (int i = 0; i < keyColumnCount; i++) {
+                final int columnType = keyTypes.getColumnType(i);
                 final int size = ColumnType.sizeOf(columnType);
-                if (size <= 0) {
-                    close();
-                    throw CairoException.nonCritical().put("value type is not supported: ").put(ColumnType.nameOf(columnType));
+                if (size > 0) {
+                    keySize += size;
+                } else {
+                    keySize = -1;
+                    break;
                 }
-                valueOffset += size;
-                valueSize += size;
             }
-        } else {
-            valueColumnCount = 0;
-        }
-        this.valueSize = valueSize;
+            this.keySize = keySize;
 
-        value = new OrderedMapValue(valueSize, valueOffsets);
-        value2 = new OrderedMapValue(valueSize, valueOffsets);
-        value3 = new OrderedMapValue(valueSize, valueOffsets);
+            // Reserve 4 bytes for key length in case of var-size keys.
+            keyOffset = keySize != -1 ? 0 : Integer.BYTES;
 
-        assert keySize + valueSize <= heapLimit - heapStart : "page size is too small to fit a single key";
-        if (keySize == -1) {
-            record = new OrderedMapVarSizeRecord(valueSize, valueOffsets, value, keyTypes, valueTypes);
-            key = new VarSizeKey();
-            mergeRef = this::mergeVarSizeKey;
-        } else {
-            record = new OrderedMapFixedSizeRecord(keySize, valueSize, valueOffsets, value, keyTypes, valueTypes);
-            key = new FixedSizeKey();
-            mergeRef = this::mergeFixedSizeKey;
+            long valueOffset = 0;
+            long[] valueOffsets = null;
+            long valueSize = 0;
+            if (valueTypes != null) {
+                valueColumnCount = valueTypes.getColumnCount();
+                valueOffsets = new long[valueColumnCount];
+
+                for (int i = 0; i < valueColumnCount; i++) {
+                    valueOffsets[i] = valueOffset;
+                    final int columnType = valueTypes.getColumnType(i);
+                    final int size = ColumnType.sizeOf(columnType);
+                    if (size <= 0) {
+                        close();
+                        throw CairoException.nonCritical().put("value type is not supported: ").put(ColumnType.nameOf(columnType));
+                    }
+                    valueOffset += size;
+                    valueSize += size;
+                }
+            } else {
+                valueColumnCount = 0;
+            }
+            this.valueSize = valueSize;
+
+            value = new OrderedMapValue(valueSize, valueOffsets);
+            value2 = new OrderedMapValue(valueSize, valueOffsets);
+            value3 = new OrderedMapValue(valueSize, valueOffsets);
+
+            assert keySize + valueSize <= heapLimit - heapStart : "page size is too small to fit a single key";
+            if (keySize == -1) {
+                final OrderedMapVarSizeRecord varSizeRecord = new OrderedMapVarSizeRecord(valueSize, valueOffsets, value, keyTypes, valueTypes);
+                record = varSizeRecord;
+                cursor = new OrderedMapVarSizeCursor(varSizeRecord, this);
+                key = new VarSizeKey();
+                mergeRef = this::mergeVarSizeKey;
+            } else {
+                final OrderedMapFixedSizeRecord fixedSizeRecord = new OrderedMapFixedSizeRecord(keySize, valueSize, valueOffsets, value, keyTypes, valueTypes);
+                record = fixedSizeRecord;
+                cursor = new OrderedMapFixedSizeCursor(fixedSizeRecord, this);
+                key = new FixedSizeKey();
+                mergeRef = this::mergeFixedSizeKey;
+            }
+        } catch (Throwable th) {
+            close();
+            throw th;
         }
-        cursor = new OrderedMapCursor(record, this);
     }
 
     @Override
@@ -242,11 +267,12 @@ public class OrderedMap implements Map, Reopenable {
     public void close() {
         Misc.free(offsets);
         if (heapStart != 0) {
-            Unsafe.free(heapStart, heapSize, heapMemoryTag);
-            heapLimit = heapStart = kPos = 0;
+            heapStart = Unsafe.free(heapStart, heapSize, heapMemoryTag);
+            heapLimit = kPos = 0;
             free = 0;
             size = 0;
             heapSize = 0;
+            nResizes = 0;
         }
     }
 
@@ -284,6 +310,11 @@ public class OrderedMap implements Map, Reopenable {
     }
 
     @Override
+    public boolean isOpen() {
+        return heapStart != 0;
+    }
+
+    @Override
     public void merge(Map srcMap, MapValueMergeFunction mergeFunc) {
         assert this != srcMap;
         if (srcMap.size() == 0) {
@@ -293,7 +324,7 @@ public class OrderedMap implements Map, Reopenable {
     }
 
     @Override
-    public void reopen(int keyCapacity, int heapSize) {
+    public void reopen(int keyCapacity, long heapSize) {
         if (heapStart == 0) {
             keyCapacity = (int) (keyCapacity / loadFactor);
             initialKeyCapacity = Math.max(Numbers.ceilPow2(keyCapacity), MIN_KEY_CAPACITY);
@@ -312,16 +343,20 @@ public class OrderedMap implements Map, Reopenable {
     @Override
     public void restoreInitialCapacity() {
         if (heapSize != initialHeapSize || keyCapacity != initialKeyCapacity) {
-            heapStart = kPos = Unsafe.realloc(heapStart, heapLimit - heapStart, heapSize = initialHeapSize, heapMemoryTag);
-            heapLimit = heapStart + initialHeapSize;
-            keyCapacity = initialKeyCapacity;
-            keyCapacity = keyCapacity < MIN_KEY_CAPACITY ? MIN_KEY_CAPACITY : Numbers.ceilPow2(keyCapacity);
-            mask = keyCapacity - 1;
-            offsets.resetCapacity();
-            offsets.setCapacity((long) keyCapacity << 1);
-            offsets.setPos((long) keyCapacity << 1);
-
-            clear();
+            try {
+                heapStart = kPos = Unsafe.realloc(heapStart, heapLimit - heapStart, heapSize = initialHeapSize, heapMemoryTag);
+                heapLimit = heapStart + initialHeapSize;
+                keyCapacity = initialKeyCapacity;
+                keyCapacity = keyCapacity < MIN_KEY_CAPACITY ? MIN_KEY_CAPACITY : Numbers.ceilPow2(keyCapacity);
+                mask = keyCapacity - 1;
+                offsets.resetCapacity();
+                offsets.setCapacity((long) keyCapacity << 1);
+                offsets.setPos((long) keyCapacity << 1);
+                clear();
+            } catch (Throwable t) {
+                close();
+                throw t;
+            }
         }
     }
 
@@ -540,30 +575,30 @@ public class OrderedMap implements Map, Reopenable {
     // Returns delta between new and old heapStart addresses.
     private long resize(long entrySize, long appendAddress) {
         assert appendAddress >= heapStart;
-        if (nResizes < maxResizes) {
-            nResizes++;
-            long kCapacity = (heapLimit - heapStart) << 1;
-            long target = appendAddress + entrySize - heapStart;
-            if (kCapacity < target) {
-                kCapacity = Numbers.ceilPow2(target);
-            }
-            if (kCapacity > MAX_HEAP_SIZE) {
-                throw LimitOverflowException.instance().put("limit of ").put(MAX_HEAP_SIZE).put(" memory exceeded in FastMap");
-            }
-            long kAddress = Unsafe.realloc(heapStart, heapSize, kCapacity, heapMemoryTag);
-
-            this.heapSize = kCapacity;
-            long delta = kAddress - heapStart;
-            kPos += delta;
-            assert kPos > 0;
-
-            this.heapStart = kAddress;
-            this.heapLimit = kAddress + kCapacity;
-
-            return delta;
-        } else {
+        if (nResizes == maxResizes) {
             throw LimitOverflowException.instance().put("limit of ").put(maxResizes).put(" resizes exceeded in FastMap");
         }
+
+        nResizes++;
+        long kCapacity = (heapLimit - heapStart) << 1;
+        long target = appendAddress + entrySize - heapStart;
+        if (kCapacity < target) {
+            kCapacity = Numbers.ceilPow2(target);
+        }
+        if (kCapacity > MAX_HEAP_SIZE) {
+            throw LimitOverflowException.instance().put("limit of ").put(MAX_HEAP_SIZE).put(" memory exceeded in FastMap");
+        }
+        long kAddress = Unsafe.realloc(heapStart, heapSize, kCapacity, heapMemoryTag);
+
+        this.heapSize = kCapacity;
+        long delta = kAddress - heapStart;
+        kPos += delta;
+        assert kPos > 0;
+
+        this.heapStart = kAddress;
+        this.heapLimit = kAddress + kCapacity;
+
+        return delta;
     }
 
     private OrderedMapValue valueOf(long startAddress, long valueAddress, boolean newValue, OrderedMapValue value) {
@@ -593,8 +628,8 @@ public class OrderedMap implements Map, Reopenable {
 
         @Override
         public void copyFrom(MapKey srcKey) {
-            FixedSizeKey srcFastKey = (FixedSizeKey) srcKey;
-            copyFromRawKey(srcFastKey.startAddress, keySize);
+            FixedSizeKey srcFixedKey = (FixedSizeKey) srcKey;
+            copyFromRawKey(srcFixedKey.startAddress, keySize);
         }
 
         @Override
@@ -664,6 +699,13 @@ public class OrderedMap implements Map, Reopenable {
         public void putInt(int value) {
             Unsafe.getUnsafe().putInt(appendAddress, value);
             appendAddress += 4L;
+        }
+
+        @Override
+        public void putInterval(Interval interval) {
+            Unsafe.getUnsafe().putLong(appendAddress, interval.getLo());
+            Unsafe.getUnsafe().putLong(appendAddress + Long.BYTES, interval.getHi());
+            appendAddress += 16L;
         }
 
         @Override
@@ -826,8 +868,6 @@ public class OrderedMap implements Map, Reopenable {
                 long delta = resize(requiredSize, appendAddress);
                 startAddress += delta;
                 appendAddress += delta;
-                assert startAddress > 0;
-                assert appendAddress > 0;
             }
         }
 
@@ -848,8 +888,8 @@ public class OrderedMap implements Map, Reopenable {
 
         @Override
         public void copyFrom(MapKey srcKey) {
-            VarSizeKey srcFastKey = (VarSizeKey) srcKey;
-            copyFromRawKey(srcFastKey.startAddress + keyOffset, srcFastKey.len);
+            VarSizeKey srcVarKey = (VarSizeKey) srcKey;
+            copyFromRawKey(srcVarKey.startAddress + keyOffset, srcVarKey.len);
         }
 
         @Override
@@ -932,6 +972,14 @@ public class OrderedMap implements Map, Reopenable {
             checkCapacity(4L);
             Unsafe.getUnsafe().putInt(appendAddress, value);
             appendAddress += 4L;
+        }
+
+        @Override
+        public void putInterval(Interval interval) {
+            checkCapacity(16L);
+            Unsafe.getUnsafe().putLong(appendAddress, interval.getLo());
+            Unsafe.getUnsafe().putLong(appendAddress + Long.BYTES, interval.getHi());
+            appendAddress += 16L;
         }
 
         @Override
@@ -1043,10 +1091,7 @@ public class OrderedMap implements Map, Reopenable {
         public void putVarchar(Utf8Sequence value) {
             int byteCount = VarcharTypeDriver.getSingleMemValueByteCount(value);
             checkCapacity(byteCount);
-            // ASCII flag is best-effort, so there is a chance that identical ASCII-only strings
-            // have different values of the flag. This would break hash table look-ups, so we always
-            // set the flag to false.
-            VarcharTypeDriver.appendValue(appendAddress, value, true);
+            VarcharTypeDriver.appendPlainValue(appendAddress, value, false);
             appendAddress += byteCount;
         }
 

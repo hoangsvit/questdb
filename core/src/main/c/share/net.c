@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -239,7 +239,17 @@ JNIEXPORT jint JNICALL Java_io_questdb_network_Net_configureLinger
 
 JNIEXPORT jint JNICALL Java_io_questdb_network_Net_connect
         (JNIEnv *e, jclass cl, jint fd, jlong sockAddr) {
-    return connect((int) fd, (const struct sockaddr *) sockAddr, sizeof(struct sockaddr));
+    jboolean retry = 0;
+    int result;
+    do {
+        result = connect((int) fd, (const struct sockaddr *) sockAddr, sizeof(struct sockaddr));
+        retry |= result == -1 && errno == EINTR;
+    } while (result == -1 && errno == EINTR);
+
+    if (retry && errno == EISCONN) {
+        return 0;
+    }
+    return result;
 }
 
 JNIEXPORT jint JNICALL Java_io_questdb_network_Net_setSndBuf

@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -35,13 +35,21 @@ import io.questdb.std.NumericException;
 import io.questdb.std.ObjList;
 
 public class TimestampFloorFunctionFactory implements FunctionFactory {
+    public static final String NAME = "timestamp_floor";
+
     @Override
     public String getSignature() {
-        return "timestamp_floor(sN)";
+        return NAME + "(sN)";
     }
 
     @Override
-    public Function newInstance(int position, ObjList<Function> args, IntList argPositions, CairoConfiguration configuration, SqlExecutionContext sqlExecutionContext) throws SqlException {
+    public Function newInstance(
+            int position,
+            ObjList<Function> args,
+            IntList argPositions,
+            CairoConfiguration configuration,
+            SqlExecutionContext sqlExecutionContext
+    ) throws SqlException {
         final CharSequence str = args.getQuick(0).getStrA(null);
         int stride = 1;
         char c = 0;

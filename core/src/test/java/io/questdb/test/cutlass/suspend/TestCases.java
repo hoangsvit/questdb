@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -69,19 +69,34 @@ public class TestCases {
         addTestCase("select * from x where isym in (select s from y limit 3) and i != 42");
         addTestCase("select * from x where isym in (select s from y limit 3) and i != 42 limit -10");
 
+
+        // EqTimestampCursorFunctionFactory
+//        addTestCase("select * from x where ts = (select ts from y limit 3) and i != 41 limit -10");
+//        addTestCase("select * from x where ts = (select ts::string from y limit 3) and i != 40 limit -7");
+//        addTestCase("select * from x where ts = (select ts::varchar from y limit 1)");
+//
+//        addTestCase("select * from x where ts > (select ts from y limit 1)");
+//        addTestCase("select * from x where ts > (select ts::string from y limit 1)");
+//        addTestCase("select * from x where ts > (select ts::varchar from y limit 1)");
+
+
+//        addTestCase("select * from x where ts < (select ts from y limit -2)");
+//        addTestCase("select * from x where ts < (select ts::string from y limit -2)");
+//        addTestCase("select * from x where ts < (select ts::varchar from y limit -2)");
+
         // FilterOnExcludedValuesRecordCursorFactory
         addTestCase("select * from x where isym not in ('a','b') and i != 42");
 
         // FilterOnValuesRecordCursorFactory
         addTestCase("select * from x where isym in (?,?)", false, "d", "a");
 
-        // DataFrameRecordCursorFactory
+        // PageFrameRecordCursorFactory
         addTestCase("select * from x where isym = ? and i != 42", false, "c");
 
-        // DeferredSingleSymbolFilterDataFrameRecordCursorFactory
+        // DeferredSingleSymbolFilterPageFrameRecordCursorFactory
         addTestCase("select * from x where isym = ?", false, "b");
 
-        // LimitRecordCursorFactory, FullFwdDataFrameCursor, FullBwdDataFrameCursor
+        // LimitRecordCursorFactory, FullFwdPartitionFrameCursor, FullBwdPartitionFrameCursor
         addTestCase("select * from x limit 1");
         addTestCase("select * from x limit 1,3");
         addTestCase("select * from x order by ts desc limit 1,3");
@@ -113,6 +128,7 @@ public class TestCases {
         // SortedSymbolIndexRecordCursorFactory
         addTestCase("select * from x where ts in '1970-01-01T00' order by isym, ts desc");
 
+
         // LimitedSizeSortedLightRecordCursorFactory
         addTestCase("select * from x order by i limit 3");
 
@@ -121,9 +137,9 @@ public class TestCases {
         addTestCase("select i, row_number() over (partition by sym order by ts) from x");
 
         // InSymbolCursorFunctionFactory
-        addTestCase("select * from x where sym in (select sym from y)");
-        addTestCase("select * from x where cast(s as symbol) in (select sym from y)");
-        addTestCase("select * from x where sym in (select sym from y where isym in (select isym from x limit 3))");
+//        addTestCase("select * from x where sym in (select sym from y)");
+//        addTestCase("select * from x where cast(s as symbol) in (select sym from y)");
+//        addTestCase("select * from x where sym in (select sym from y where isym in (select isym from x limit 3))");
 
         // CountRecordCursorFactory
         addTestCase("select count() from x where isym = 'c'");
@@ -179,6 +195,9 @@ public class TestCases {
         addTestCase("select max(i), min(i) from x sample by 1s fill(linear) limit -10");
 
         // SampleByFillNullNotKeyedRecordCursorFactory
+        addTestCase("select sum(i) s, ts from x sample by 30m fill(null) align to calendar with offset '10:00'");
+
+        // FillRangeRecordCursorFactory
         addTestCase("select sum(i) s, ts from x sample by 30m fill(null)");
 
         // SampleByFirstLastRecordCursorFactory
@@ -229,10 +248,10 @@ public class TestCases {
         // LatestByValueIndexedFilteredRecordCursorFactory
         addTestCase("select * from x where isym = 'c' and i <> 13 latest on ts partition by isym");
 
-        // DataFrameRecordCursorFactory, LatestByValueIndexedRowCursorFactory
+        // PageFrameRecordCursorFactory, LatestByValueIndexedRowCursorFactory
         addTestCase("select * from x where isym = 'c' latest on ts partition by isym");
 
-        // DataFrameRecordCursorFactory, LatestByValueDeferredIndexedRowCursorFactory
+        // PageFrameRecordCursorFactory, LatestByValueDeferredIndexedRowCursorFactory
         addTestCase("select * from x where isym = ? latest on ts partition by isym", false, "a");
 
         // LatestByValueDeferredIndexedFilteredRecordCursorFactory

@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -41,14 +41,14 @@ public class JoinRecordMetadataTest extends AbstractCairoTest {
             metadata.add("a", "X", ColumnType.FLOAT, false, 0, false, null);
             Assert.fail();
         } catch (Exception e) {
-            TestUtils.assertContains(e.getMessage(), "Duplicate column [name=X, alias=a]");
+            TestUtils.assertContains(e.getMessage(), "duplicate column [name=X, alias=a]");
         }
 
         try {
             metadata.add("A", "X", ColumnType.FLOAT, false, 0, false, null);
             Assert.fail();
         } catch (Exception e) {
-            TestUtils.assertContains(e.getMessage(), "Duplicate column [name=X, alias=A]");
+            TestUtils.assertContains(e.getMessage(), "duplicate column [name=X, alias=A]");
         }
 
         Assert.assertEquals(0, metadata.getColumnIndexQuiet("x"));
@@ -71,7 +71,7 @@ public class JoinRecordMetadataTest extends AbstractCairoTest {
             metadata.add("b", "y", ColumnType.FLOAT, false, 0, false, null);
             Assert.fail();
         } catch (Exception e) {
-            TestUtils.assertContains(e.getMessage(), "Duplicate column [name=y, alias=b]");
+            TestUtils.assertContains(e.getMessage(), "duplicate column [name=y, alias=b]");
         }
 
         metadata.add(null, "c.x", ColumnType.STRING, false, 0, false, null);

@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -39,6 +39,22 @@ public interface TernaryFunction extends Function {
         getRight().close();
     }
 
+    @Override
+    default void offerStateTo(Function that) {
+        if (that instanceof TernaryFunction) {
+            getLeft().offerStateTo(((TernaryFunction) that).getLeft());
+            getCenter().offerStateTo(((TernaryFunction) that).getCenter());
+            getRight().offerStateTo(((TernaryFunction) that).getRight());
+        }
+    }
+
+    @Override
+    default void cursorClosed() {
+        getLeft().cursorClosed();
+        getCenter().cursorClosed();
+        getRight().cursorClosed();
+    }
+
     Function getCenter();
 
     Function getLeft();
@@ -53,20 +69,13 @@ public interface TernaryFunction extends Function {
     }
 
     @Override
-    default void initCursor() {
-        getLeft().initCursor();
-        getCenter().initCursor();
-        getRight().initCursor();
-    }
-
-    @Override
     default boolean isConstant() {
         return getLeft().isConstant() && getCenter().isConstant() && getRight().isConstant();
     }
 
     @Override
-    default boolean isReadThreadSafe() {
-        return getLeft().isReadThreadSafe() && getCenter().isReadThreadSafe() && getRight().isReadThreadSafe();
+    default boolean isNonDeterministic() {
+        return getLeft().isNonDeterministic() || getCenter().isNonDeterministic() || getRight().isNonDeterministic();
     }
 
     @Override
@@ -80,6 +89,11 @@ public interface TernaryFunction extends Function {
         boolean cc = getRight().isConstant();
 
         return (ac || arc) && (bc || brc) && (cc || crc) && (arc || brc || crc);
+    }
+
+    @Override
+    default boolean isThreadSafe() {
+        return getLeft().isThreadSafe() && getCenter().isThreadSafe() && getRight().isThreadSafe();
     }
 
     @Override

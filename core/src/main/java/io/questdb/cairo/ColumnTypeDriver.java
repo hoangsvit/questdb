@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -29,6 +29,14 @@ import io.questdb.std.FilesFacade;
 import io.questdb.std.str.LPSZ;
 
 public interface ColumnTypeDriver {
+
+    /**
+     * Appends null encoding to the memory.
+     *
+     * @param auxMem  the aux memory (fixed part)
+     * @param dataMem the data memory
+     */
+    void appendNull(MemoryA auxMem, MemoryA dataMem);
 
     /**
      * Returns bytes count for the given row count. This method is similar to {@link #getAuxVectorSize(long)}
@@ -59,9 +67,11 @@ public interface ColumnTypeDriver {
      * @param memoryTag the memory tag to help identify sources of memory leaks
      * @param opts      mapping options
      */
-    void configureAuxMemOM(FilesFacade ff, MemoryOM auxMem, int fd, LPSZ fileName, long rowLo, long rowHi, int memoryTag, long opts);
+    void configureAuxMemOM(FilesFacade ff, MemoryOM auxMem, long fd, LPSZ fileName, long rowLo, long rowHi, int memoryTag, long opts);
 
-    void configureDataMemOM(FilesFacade ff, MemoryR auxMem, MemoryOM dataMem, int dataFd, LPSZ fileName, long rowLo, long rowHi, int memoryTag, long opts);
+    void configureDataMemOM(FilesFacade ff, MemoryR auxMem, MemoryOM dataMem, long dataFd, LPSZ fileName, long rowLo, long rowHi, int memoryTag, long opts);
+
+    long dedupMergeVarColumnSize(long mergeIndexAddr, long mergeIndexCount, long srcDataFixAddr, long srcOooFixAddr);
 
     /**
      * Returns offset in bytes of the aux entry that describes the provided row number.
@@ -102,9 +112,32 @@ public interface ColumnTypeDriver {
 
     long getDataVectorSizeAt(long auxMemAddr, long row);
 
-    long getDataVectorSizeAtFromFd(FilesFacade ff, int auxFd, long row);
+    long getDataVectorSizeAtFromFd(FilesFacade ff, long auxFd, long row);
 
     long getMinAuxVectorSize();
+
+    /**
+     * Used to shuffle column data after calling Vect.radixSortManySegmentsIndexAsc()
+     *
+     * @param indexFormat          format of the index (e.g. segment byte count, reverse index bytes etc.) returned from radix sort procs
+     * @param primaryAddressList   list of memory pointers to primary addresses
+     * @param secondaryAddressList list of memory pointers to secondary addresses
+     * @param outPrimaryAddress    pointer to allocated out address for data
+     * @param outSecondaryAddress  pointer to allocated out address for aux data
+     * @param mergeIndex           merge index. Format is 2 longs per row. First long is timestamp and second long is row index + segment index.
+     *                             Segment index bytes is passed in mergeIndexEncodingSegmentBytes
+     * @param destDataOffset       offset in the destination data memory to shift all the records in aux column by
+     */
+    long mergeShuffleColumnFromManyAddresses(
+            long indexFormat,
+            long primaryAddressList,
+            long secondaryAddressList,
+            long outPrimaryAddress,
+            long outSecondaryAddress,
+            long mergeIndex,
+            long destDataOffset,
+            long destDataSize
+    );
 
     void o3ColumnMerge(
             long timestampMergeIndexAddr,
@@ -137,7 +170,7 @@ public interface ColumnTypeDriver {
             long srcHi,
             long dstAddr,
             long dstFileOffset,
-            int dstFd,
+            long dstFd,
             boolean mixedIOFlag
     );
 
@@ -168,7 +201,17 @@ public interface ColumnTypeDriver {
      */
     long setAppendAuxMemAppendPosition(MemoryMA auxMem, long rowCount);
 
+    /**
+     * Sets the append position in both the auxiliary and data vectors.
+     *
+     * @param pos     the position to set, starting from 0
+     * @param auxMem  the auxiliary memory
+     * @param dataMem the data memory
+     * @return the sum of bytes used by entries up to the specified position (excluding the position itself)
+     */
     long setAppendPosition(long pos, MemoryMA auxMem, MemoryMA dataMem);
+
+    void setDataVectorEntriesToNull(long dataMemAddr, long rowCount);
 
     /**
      * Materializes nulls in the entire column, typically happens after
@@ -176,7 +219,7 @@ public interface ColumnTypeDriver {
      * column tops yet.
      *
      * @param auxMemAddr aux vector address
-     * @param rowCount the number of rows
+     * @param rowCount   the number of rows
      */
     void setFullAuxVectorNull(long auxMemAddr, long rowCount);
 
@@ -184,21 +227,11 @@ public interface ColumnTypeDriver {
      * Materializes column top in the aux vector. This is typically required if there
      * is some data to be written after the nulls.
      *
-     * @param auxMemAddr the aux memory address
+     * @param auxMemAddr    the aux memory address
      * @param initialOffset the offset we begin writing nulls with, e.g. the offset that would begin locating our nulls
-     * @param columnTop the column top
+     * @param columnTop     the column top
      */
     void setPartAuxVectorNull(long auxMemAddr, long initialOffset, long columnTop);
 
-    void setDataVectorEntriesToNull(long dataMemAddr, long rowCount);
-
     void shiftCopyAuxVector(long shift, long src, long srcLo, long srcHi, long dstAddr, long dstAddrSize);
-
-    /**
-     * Appends null encoding to the memory.
-     *
-     * @param dataMem the data memory
-     * @param auxMem  the aux memory (fixed part)
-     */
-    void appendNull(MemoryA dataMem, MemoryA auxMem);
 }

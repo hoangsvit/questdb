@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -26,28 +26,29 @@ package io.questdb.cutlass.http;
 
 import io.questdb.DefaultFactoryProvider;
 import io.questdb.FactoryProvider;
+import io.questdb.cairo.ColumnType;
+import io.questdb.cairo.PartitionBy;
 import io.questdb.cairo.SecurityContext;
 import io.questdb.cutlass.http.processors.JsonQueryProcessorConfiguration;
 import io.questdb.cutlass.http.processors.LineHttpProcessorConfiguration;
 import io.questdb.cutlass.http.processors.StaticContentProcessorConfiguration;
 import io.questdb.cutlass.line.LineTcpTimestampAdapter;
 import io.questdb.network.DefaultIODispatcherConfiguration;
-import io.questdb.network.IODispatcherConfiguration;
+import io.questdb.std.ConcurrentCacheConfiguration;
+import io.questdb.std.DefaultConcurrentCacheConfiguration;
 import io.questdb.std.FilesFacade;
 import io.questdb.std.FilesFacadeImpl;
 import io.questdb.std.NanosecondClock;
-import io.questdb.std.Numbers;
 import io.questdb.std.datetime.microtime.MicrosecondClock;
+import io.questdb.std.datetime.microtime.MicrosecondClockImpl;
 import io.questdb.std.datetime.millitime.MillisecondClock;
 import io.questdb.std.datetime.millitime.MillisecondClockImpl;
 
 import java.io.IOException;
 import java.io.InputStream;
 
-public class DefaultHttpServerConfiguration implements HttpServerConfiguration {
-
+public class DefaultHttpServerConfiguration extends DefaultIODispatcherConfiguration implements HttpFullFatServerConfiguration {
     protected final MimeTypesCache mimeTypesCache;
-    private final IODispatcherConfiguration dispatcherConfiguration;
     private final HttpContextConfiguration httpContextConfiguration;
     private final JsonQueryProcessorConfiguration jsonQueryProcessorConfiguration = new DefaultJsonQueryProcessorConfiguration() {
     };
@@ -56,11 +57,6 @@ public class DefaultHttpServerConfiguration implements HttpServerConfiguration {
         @Override
         public FilesFacade getFilesFacade() {
             return FilesFacadeImpl.INSTANCE;
-        }
-
-        @Override
-        public CharSequence getIndexFileName() {
-            return "index.html";
         }
 
         @Override
@@ -89,25 +85,17 @@ public class DefaultHttpServerConfiguration implements HttpServerConfiguration {
     }
 
     public DefaultHttpServerConfiguration(HttpContextConfiguration httpContextConfiguration) {
-        this(httpContextConfiguration, DefaultIODispatcherConfiguration.INSTANCE);
-    }
-
-    public DefaultHttpServerConfiguration(
-            HttpContextConfiguration httpContextConfiguration,
-            IODispatcherConfiguration dispatcherConfiguration
-    ) {
         try (InputStream inputStream = DefaultHttpServerConfiguration.class.getResourceAsStream("/io/questdb/site/conf/mime.types")) {
             this.mimeTypesCache = new MimeTypesCache(inputStream);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
         this.httpContextConfiguration = httpContextConfiguration;
-        this.dispatcherConfiguration = dispatcherConfiguration;
     }
 
     @Override
-    public IODispatcherConfiguration getDispatcherConfiguration() {
-        return dispatcherConfiguration;
+    public ConcurrentCacheConfiguration getConcurrentCacheConfiguration() {
+        return DefaultConcurrentCacheConfiguration.DEFAULT;
     }
 
     @Override
@@ -131,18 +119,13 @@ public class DefaultHttpServerConfiguration implements HttpServerConfiguration {
     }
 
     @Override
+    public String getPassword() {
+        return "";
+    }
+
+    @Override
     public String getPoolName() {
         return "http";
-    }
-
-    @Override
-    public int getQueryCacheBlockCount() {
-        return 4;
-    }
-
-    @Override
-    public int getQueryCacheRowCount() {
-        return 4;
     }
 
     @Override
@@ -153,6 +136,11 @@ public class DefaultHttpServerConfiguration implements HttpServerConfiguration {
     @Override
     public StaticContentProcessorConfiguration getStaticContentProcessorConfiguration() {
         return staticContentProcessorConfiguration;
+    }
+
+    @Override
+    public String getUsername() {
+        return "";
     }
 
     @Override
@@ -200,15 +188,16 @@ public class DefaultHttpServerConfiguration implements HttpServerConfiguration {
         return true;
     }
 
+    @Override
+    public boolean preAllocateBuffers() {
+        return false;
+    }
+
     public class DefaultJsonQueryProcessorConfiguration implements JsonQueryProcessorConfiguration {
+
         @Override
         public int getConnectionCheckFrequency() {
             return 1_000_000;
-        }
-
-        @Override
-        public int getDoubleScale() {
-            return Numbers.MAX_SCALE;
         }
 
         @Override
@@ -219,11 +208,6 @@ public class DefaultHttpServerConfiguration implements HttpServerConfiguration {
         @Override
         public FilesFacade getFilesFacade() {
             return FilesFacadeImpl.INSTANCE;
-        }
-
-        @Override
-        public int getFloatScale() {
-            return 10;
         }
 
         @Override
@@ -247,30 +231,31 @@ public class DefaultHttpServerConfiguration implements HttpServerConfiguration {
         }
     }
 
-    public class DefaultLineHttpProcessorConfiguration implements LineHttpProcessorConfiguration {
+    public static class DefaultLineHttpProcessorConfiguration implements LineHttpProcessorConfiguration {
+
         @Override
         public boolean autoCreateNewColumns() {
-            return lineHttpProcessorConfiguration.isStringAsTagSupported();
+            return true;
         }
 
         @Override
         public boolean autoCreateNewTables() {
-            return lineHttpProcessorConfiguration.isStringAsTagSupported();
+            return true;
         }
 
         @Override
         public short getDefaultColumnTypeForFloat() {
-            return lineHttpProcessorConfiguration.getDefaultColumnTypeForInteger();
+            return ColumnType.DOUBLE;
         }
 
         @Override
         public short getDefaultColumnTypeForInteger() {
-            return lineHttpProcessorConfiguration.getDefaultColumnTypeForInteger();
+            return ColumnType.LONG;
         }
 
         @Override
         public int getDefaultPartitionBy() {
-            return lineHttpProcessorConfiguration.getDefaultPartitionBy();
+            return PartitionBy.DAY;
         }
 
         @Override
@@ -280,17 +265,17 @@ public class DefaultHttpServerConfiguration implements HttpServerConfiguration {
 
         @Override
         public MicrosecondClock getMicrosecondClock() {
-            return lineHttpProcessorConfiguration.getMicrosecondClock();
+            return MicrosecondClockImpl.INSTANCE;
         }
 
         @Override
         public long getSymbolCacheWaitUsBeforeReload() {
-            return lineHttpProcessorConfiguration.getSymbolCacheWaitUsBeforeReload();
+            return 500_000;
         }
 
         @Override
         public LineTcpTimestampAdapter getTimestampAdapter() {
-            return lineHttpProcessorConfiguration.getTimestampAdapter();
+            return LineTcpTimestampAdapter.DEFAULT_TS_INSTANCE;
         }
 
         @Override
@@ -299,22 +284,17 @@ public class DefaultHttpServerConfiguration implements HttpServerConfiguration {
         }
 
         @Override
-        public boolean isStringAsTagSupported() {
-            return lineHttpProcessorConfiguration.isSymbolAsFieldSupported();
-        }
-
-        @Override
         public boolean isStringToCharCastAllowed() {
-            return lineHttpProcessorConfiguration.isStringAsTagSupported();
-        }
-
-        @Override
-        public boolean isSymbolAsFieldSupported() {
-            return lineHttpProcessorConfiguration.isSymbolAsFieldSupported();
+            return false;
         }
 
         @Override
         public boolean isUseLegacyStringDefault() {
+            return true;
+        }
+
+        @Override
+        public boolean logMessageOnError() {
             return true;
         }
     }

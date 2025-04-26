@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -45,7 +45,7 @@ public class SymbolCache implements DirectUtf8SymbolLookup, Closeable {
             SymbolTable.VALUE_NOT_FOUND
     );
     private final StringSink tempSink = new StringSink();
-    private final long waitUsBeforeReload;
+    private final long waitIntervalBeforeReload;
     private int columnIndex;
     private long lastSymbolReaderReloadTimestamp;
     private int symbolIndexInTxFile;
@@ -53,12 +53,12 @@ public class SymbolCache implements DirectUtf8SymbolLookup, Closeable {
     private TableWriterAPI writerAPI;
 
     public SymbolCache(LineTcpReceiverConfiguration configuration) {
-        this(configuration.getMicrosecondClock(), configuration.getSymbolCacheWaitUsBeforeReload());
+        this(configuration.getMicrosecondClock(), configuration.getSymbolCacheWaitBeforeReload());
     }
 
-    public SymbolCache(MicrosecondClock microsecondClock, long symbolCacheWaitUsBeforeReload) {
+    public SymbolCache(MicrosecondClock microsecondClock, long waitIntervalBeforeReload) {
         this.clock = microsecondClock;
-        this.waitUsBeforeReload = symbolCacheWaitUsBeforeReload;
+        this.waitIntervalBeforeReload = waitIntervalBeforeReload;
     }
 
     @Override
@@ -88,7 +88,7 @@ public class SymbolCache implements DirectUtf8SymbolLookup, Closeable {
         int symbolValueCount;
 
         if (
-                ticks - lastSymbolReaderReloadTimestamp > waitUsBeforeReload &&
+                ticks - lastSymbolReaderReloadTimestamp > waitIntervalBeforeReload &&
                         (symbolValueCount = readSymbolCount(symbolIndexInTxFile, true)) > symbolMapReader.getSymbolCount()
         ) {
             symbolMapReader.updateSymbolCount(symbolValueCount);

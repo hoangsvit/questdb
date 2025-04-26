@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -66,6 +66,7 @@ public final class LongLongHashSet implements Mutable, Sinkable {
     private final long noEntryKeyValue;
     private final SinkStrategy sinkStrategy;
     private int capacity;
+    private boolean hasNull = false;
     private int mask;
     private int size;
     private long[] values;
@@ -128,6 +129,10 @@ public final class LongLongHashSet implements Mutable, Sinkable {
         }
     }
 
+    public void addNull() {
+        this.hasNull = true;
+    }
+
     /**
      * Clears the set.
      */
@@ -135,6 +140,7 @@ public final class LongLongHashSet implements Mutable, Sinkable {
     public void clear() {
         Arrays.fill(values, noEntryKeyValue);
         size = 0;
+        hasNull = false;
     }
 
     /**
@@ -144,6 +150,10 @@ public final class LongLongHashSet implements Mutable, Sinkable {
      */
     public boolean contains(long key1, long key2) {
         return keyIndex(key1, key2) < 0;
+    }
+
+    public boolean hasNull() {
+        return hasNull;
     }
 
     /**
